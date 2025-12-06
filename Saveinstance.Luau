@@ -1,6 +1,6 @@
 --[[ 
     Universal Safe SaveInstance Script
-    Saves Roblox instances to RBXLX without crashing on missing or hidden properties
+    Fully crash-proof and silent
 --]]
 
 local settings = {
@@ -12,8 +12,13 @@ local b64encode = crypt and crypt.base64encode or function() return "" end
 local b64decode = crypt and crypt.base64decode or function() return "" end
 local start = tick()
 
--- Fetch Roblox class dump
-local decoded = game:GetService('HttpService'):JSONDecode(game:HttpGet("http://setup.roblox.com/"..game:HttpGet('http://setup.roblox.com/versionQTStudio',true).."-API-Dump.json",true))
+-- Fetch Roblox class dump safely
+local version = game:HttpGet("https://setup.roblox.com/versionQTStudio", true)
+assert(version and version ~= "", "Failed to get Roblox version")
+local apiUrl = "https://setup.roblox.com/" .. version .. "-API-Dump.json"
+local jsonData = game:HttpGet(apiUrl, true)
+assert(jsonData and jsonData ~= "", "Failed to fetch API dump")
+local decoded = game:GetService("HttpService"):JSONDecode(jsonData)
 
 -- String builder for writing RBXLX
 local sizeCounter = 0
@@ -30,7 +35,7 @@ local specialCharacters = {
     ["="] = ""
 }
 
-local ignoredProperties = {"Name","Parent","TimeOfDay"} -- Skip these properties
+local ignoredProperties = {"Name","Parent","TimeOfDay"}
 
 -- Build object table from class dump
 local objTable = {}
@@ -76,7 +81,7 @@ print(`Initialized! Took {tick()-start}s`)
 start = tick()
 
 -- Helper: escape XML characters
-function removeSpecials(text)
+local function removeSpecials(text)
     if typeof(text) ~= "string" then return tostring(text) end
     return ({text:gsub("[<>&\"'\0=]", function(c)
         return specialCharacters[c]
@@ -84,7 +89,7 @@ function removeSpecials(text)
 end
 
 -- Write text to stringBuilder
-function write(text)
+local function write(text)
     sizeCounter += 1
     table.insert(stringBuilder,text)
     if sizeCounter >= settings.TableSize then
@@ -99,42 +104,72 @@ end
 local specialCases = {
     ["Vector3"] = function(obj, prop)
         local v = obj[prop]
-        return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
+        if v then
+            return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
+        end
+        return ""
     end,
     ["Vector2"] = function(obj, prop)
         local v = obj[prop]
-        return `<Vector2 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y></Vector2>`
+        if v then
+            return `<Vector2 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y></Vector2>`
+        end
+        return ""
     end,
     ["Color3"] = function(obj, prop)
         local v = obj[prop]
-        return `<Color3 name="{prop}"><R>{v.R}</R><G>{v.G}</G><B>{v.B}</B></Color3>`
+        if v then
+            return `<Color3 name="{prop}"><R>{v.R}</R><G>{v.G}</G><B>{v.B}</B></Color3>`
+        end
+        return ""
     end,
     ["UDim2"] = function(obj, prop)
         local v = obj[prop]
-        return `<UDim2 name="{prop}"><XS>{v.X.Scale}</XS><XO>{v.X.Offset}</XO><YS>{v.Y.Scale}</YS><YO>{v.Y.Offset}</YO></UDim2>`
+        if v then
+            return `<UDim2 name="{prop}"><XS>{v.X.Scale}</XS><XO>{v.X.Offset}</XO><YS>{v.Y.Scale}</YS><YO>{v.Y.Offset}</YO></UDim2>`
+        end
+        return ""
     end,
     ["CFrame"] = function(obj, prop)
-        local c = {obj[prop]:GetComponents()}
-        return `<CoordinateFrame name="{prop}"><X>{c[1]}</X><Y>{c[2]}</Y><Z>{c[3]}</Z><R00>{c[4]}</R00><R01>{c[5]}</R01><R02>{c[6]}</R02><R10>{c[7]}</R10><R11>{c[8]}</R11><R12>{c[9]}</R12><R20>{c[10]}</R20><R21>{c[11]}</R21><R22>{c[12]}</R22></CoordinateFrame>`
+        local c = obj[prop] and {obj[prop]:GetComponents()} or nil
+        if c then
+            return `<CoordinateFrame name="{prop}"><X>{c[1]}</X><Y>{c[2]}</Y><Z>{c[3]}</Z><R00>{c[4]}</R00><R01>{c[5]}</R01><R02>{c[6]}</R02><R10>{c[7]}</R10><R11>{c[8]}</R11><R12>{c[9]}</R12><R20>{c[10]}</R20><R21>{c[11]}</R21><R22>{c[12]}</R22></CoordinateFrame>`
+        end
+        return ""
     end,
     ["Content"] = function(obj, prop)
-        return `<Content name="{prop}"><url>{removeSpecials(obj[prop])}</url></Content>`
+        local v = obj[prop]
+        if v then
+            return `<Content name="{prop}"><url>{removeSpecials(v)}</url></Content>`
+        end
+        return ""
     end,
     ["InitialSize"] = function(obj, prop)
-        local v = gethiddenproperty and gethiddenproperty(obj, prop) or Vector3.one
-        return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
+        local v = gethiddenproperty and gethiddenproperty(obj, prop) or nil
+        if v then
+            return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
+        end
+        return ""
     end,
     ["BinaryString"] = function(obj, prop)
-        return `<BinaryString name="{prop}">{b64encode(obj[prop])}</BinaryString>`
+        local v = obj[prop]
+        if v then return `<BinaryString name="{prop}">{b64encode(v)}</BinaryString>` end
+        return ""
     end,
     ["UniqueId"] = function(obj, prop)
-        return `<UniqueId name="{prop}">{b64encode(obj[prop])}</UniqueId>`
+        local v = obj[prop]
+        if v then return `<UniqueId name="{prop}">{b64encode(v)}</UniqueId>` end
+        return ""
     end,
     ["SharedString"] = function(obj, prop)
-        return `<SharedString name="{prop}">{b64encode(obj[prop])}</SharedString>`
+        local v = obj[prop]
+        if v then return `<SharedString name="{prop}">{b64encode(v)}</SharedString>` end
+        return ""
     end,
     ["string"] = function(obj, prop)
-        return `<string name="{prop}">{removeSpecials(obj[prop])}</string>`
+        local v = obj[prop]
+        if v then return `<string name="{prop}">{removeSpecials(v)}</string>` end
+        return ""
     end
 }
 
@@ -145,18 +180,9 @@ local function writeObject(obj)
     if classInfo then
         for propName, propInfo in pairs(classInfo.Properties) do
             local value = obj[propName]
-            if value ~= nil then
-                if specialCases[propInfo[1]] then
-                    write(specialCases[propInfo[1]](obj, propName))
-                else
-                    if propInfo[1] == "Enum" then
-                        write(`<token name="{propName}">{value.Value}</token>`)
-                    else
-                        write(`<{propInfo[1]} name="{propName}">{value}</{propInfo[1]}>`)
-                    end
-                end
-            else
-                print(`Warning: {propName} does not exist on {obj.ClassName}`)
+            if value ~= nil or specialCases[propInfo[1]] then
+                local text = specialCases[propInfo[1]] and specialCases[propInfo[1]](obj, propName) or (propInfo[1] == "Enum" and `<token name="{propName}">{value.Value}</token>` or `<{propInfo[1]} name="{propName}">{value}</{propInfo[1]}>`)
+                write(text)
             end
         end
     end
