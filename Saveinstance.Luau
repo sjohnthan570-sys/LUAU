@@ -103,72 +103,72 @@ end
 -- Special cases for certain property types
 local specialCases = {
     ["Vector3"] = function(obj, prop)
-        local v = obj[prop]
-        if v then
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then
             return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
         end
         return ""
     end,
     ["Vector2"] = function(obj, prop)
-        local v = obj[prop]
-        if v then
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then
             return `<Vector2 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y></Vector2>`
         end
         return ""
     end,
     ["Color3"] = function(obj, prop)
-        local v = obj[prop]
-        if v then
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then
             return `<Color3 name="{prop}"><R>{v.R}</R><G>{v.G}</G><B>{v.B}</B></Color3>`
         end
         return ""
     end,
     ["UDim2"] = function(obj, prop)
-        local v = obj[prop]
-        if v then
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then
             return `<UDim2 name="{prop}"><XS>{v.X.Scale}</XS><XO>{v.X.Offset}</XO><YS>{v.Y.Scale}</YS><YO>{v.Y.Offset}</YO></UDim2>`
         end
         return ""
     end,
     ["CFrame"] = function(obj, prop)
-        local c = obj[prop] and {obj[prop]:GetComponents()} or nil
-        if c then
+        local success, c = pcall(function() return obj[prop] and {obj[prop]:GetComponents()} end)
+        if success and c then
             return `<CoordinateFrame name="{prop}"><X>{c[1]}</X><Y>{c[2]}</Y><Z>{c[3]}</Z><R00>{c[4]}</R00><R01>{c[5]}</R01><R02>{c[6]}</R02><R10>{c[7]}</R10><R11>{c[8]}</R11><R12>{c[9]}</R12><R20>{c[10]}</R20><R21>{c[11]}</R21><R22>{c[12]}</R22></CoordinateFrame>`
         end
         return ""
     end,
     ["Content"] = function(obj, prop)
-        local v = obj[prop]
-        if v then
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then
             return `<Content name="{prop}"><url>{removeSpecials(v)}</url></Content>`
         end
         return ""
     end,
     ["InitialSize"] = function(obj, prop)
-        local v = gethiddenproperty and gethiddenproperty(obj, prop) or nil
-        if v then
+        local success, v = pcall(function() return gethiddenproperty and gethiddenproperty(obj, prop) end)
+        if success and v then
             return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
         end
         return ""
     end,
     ["BinaryString"] = function(obj, prop)
-        local v = obj[prop]
-        if v then return `<BinaryString name="{prop}">{b64encode(v)}</BinaryString>` end
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then return `<BinaryString name="{prop}">{b64encode(v)}</BinaryString>` end
         return ""
     end,
     ["UniqueId"] = function(obj, prop)
-        local v = obj[prop]
-        if v then return `<UniqueId name="{prop}">{b64encode(v)}</UniqueId>` end
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then return `<UniqueId name="{prop}">{b64encode(v)}</UniqueId>` end
         return ""
     end,
     ["SharedString"] = function(obj, prop)
-        local v = obj[prop]
-        if v then return `<SharedString name="{prop}">{b64encode(v)}</SharedString>` end
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then return `<SharedString name="{prop}">{b64encode(v)}</SharedString>` end
         return ""
     end,
     ["string"] = function(obj, prop)
-        local v = obj[prop]
-        if v then return `<string name="{prop}">{removeSpecials(v)}</string>` end
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then return `<string name="{prop}">{removeSpecials(v)}</string>` end
         return ""
     end
 }
@@ -179,11 +179,18 @@ local function writeObject(obj)
     local classInfo = objTable[obj.ClassName]
     if classInfo then
         for propName, propInfo in pairs(classInfo.Properties) do
-            local value = obj[propName]
-            if value ~= nil or specialCases[propInfo[1]] then
-                local text = specialCases[propInfo[1]] and specialCases[propInfo[1]](obj, propName) or (propInfo[1] == "Enum" and `<token name="{propName}">{value.Value}</token>` or `<{propInfo[1]} name="{propName}">{value}</{propInfo[1]}>`)
-                write(text)
+            local success, value = pcall(function() return obj[propName] end)
+            local text = ""
+            if specialCases[propInfo[1]] then
+                text = specialCases[propInfo[1]](obj, propName)
+            elseif success and value ~= nil then
+                if propInfo[1] == "Enum" then
+                    text = `<token name="{propName}">{value.Value}</token>`
+                else
+                    text = `<{propInfo[1]} name="{propName}">{value}</{propInfo[1]}>`
+                end
             end
+            if text ~= "" then write(text) end
         end
     end
     write("</Properties>")
