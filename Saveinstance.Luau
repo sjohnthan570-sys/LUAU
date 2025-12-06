@@ -253,6 +253,40 @@ local function writeTerrainVoxels(terrain, opts)
 end
 -- SAFE writeObject with pcall protection
 local function writeObject(obj)
+
+    -- === TERRAIN FIX ===
+    if obj:IsA("Terrain") then
+        write('<Item class="Terrain"><Properties>')
+        write('<string name="Name">'..removeSpecials(obj.Name)..'</string>')
+
+        -- Save basic editable Terrain properties
+        local terrainProps = {
+            "WaterWaveSize",
+            "WaterWaveSpeed",
+            "WaterReflectance",
+            "WaterColor",
+            "WaterTransparency"
+        }
+
+        for _, prop in ipairs(terrainProps) do
+            local ok, value = pcall(function() return obj[prop] end)
+            if ok and value ~= nil then
+                if typeof(value) == "Color3" then
+                    write('<Color3 name="'..prop..'"><R>'..value.R..'</R><G>'..value.G..'</G><B>'..value.B..'</B></Color3>')
+                elseif typeof(value) == "number" then
+                    write('<float name="'..prop..'">'..value..'</float>')
+                else
+                    write('<string name="'..prop..'">'..tostring(value)..'</string>')
+                end
+            end
+        end
+
+        write('</Properties></Item>')
+        return -- skip normal recursion into Terrain
+    end
+    -- === END TERRAIN FIX ===
+
+    -- === ORIGINAL CODE STARTS HERE ===
     write(`<Item class="{obj.ClassName}"><Properties><String name="Name">{removeSpecials(obj.Name)}</String>`)
 
     local classInfo = objTable[obj.ClassName]
@@ -298,10 +332,6 @@ local function writeObject(obj)
 
     write("</Item>")
 end
-
----------------------------------------------------------------------
--- TERRAIN SAVE
----------------------------------------------------------------------
 
 local function saveTerrain()
     local Terrain = workspace.Terrain
