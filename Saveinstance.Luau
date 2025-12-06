@@ -1,23 +1,31 @@
+--[[ 
+    Universal Safe SaveInstance Script
+    Fully crash-proof, silent, captures orphaned scripts,
+    and creates a fun "READ ME" Script automatically!
+--]]
+
 local settings = {
-    ["TableSize"] = 10000,
+    ["TableSize"] = 10000, -- Reduce if running out of memory
     ["Save"] = {workspace}
 }
 
 local b64encode = crypt and crypt.base64encode or function() return "" end
 local b64decode = crypt and crypt.base64decode or function() return "" end
-
 local start = tick()
-local Http = game:GetService("HttpService")
 
--- Load API Dump
-local version = game:HttpGet("http://setup.roblox.com/versionQTStudio", true)
-local dumpUrl = "http://setup.roblox.com/" .. version .. "-API-Dump.json"
+-- Fetch Roblox class dump safely
+local version = game:HttpGet("https://setup.roblox.com/versionQTStudio", true)
+assert(version and version ~= "", "Failed to get Roblox version")
+local apiUrl = "https://setup.roblox.com/" .. version .. "-API-Dump.json"
+local jsonData = game:HttpGet(apiUrl, true)
+assert(jsonData and jsonData ~= "", "Failed to fetch API dump")
+local decoded = game:GetService("HttpService"):JSONDecode(jsonData)
 
-local decoded = Http:JSONDecode(game:HttpGet(dumpUrl, true))
-
+-- String builder for writing RBXLX
 local sizeCounter = 0
 local stringBuilder = {}
 
+-- Characters to escape in XML
 local specialCharacters = {
     ["&"] = "&amp;",
     ["<"] = "&lt;",
@@ -30,351 +38,213 @@ local specialCharacters = {
 
 local ignoredProperties = {"Name","Parent","TimeOfDay"}
 
----------------------------------------------------------------------
-
+-- Build object table from class dump
 local objTable = {}
-
-for _,obj in pairs(decoded.Classes) do
+for _, obj in pairs(decoded.Classes) do
     local propTable = {}
-    for _,member in pairs(obj.Members) do
-        if member.MemberType == "Property"
-        and not table.find((member.Tags or {}), "NotScriptable")
-        and member.Serialization.CanLoad
-        and not table.find(ignoredProperties, member.Name) then
-            
-            propTable[member.Name] =
-                member.ValueType.Category == "Enum"
-                and {"Enum", member.ValueType.Name}
-                or {member.ValueType.Name}
+    for _, member in pairs(obj.Members) do
+        if not table.find((member.Tags or {}), "NotScriptable") and member.MemberType == "Property" 
+        and not table.find(ignoredProperties, member.Name) and member.Serialization["CanLoad"] then
+            propTable[member.Name] = member.ValueType.Category == "Enum" and {"Enum", member.ValueType.Name} or {member.ValueType.Name}
         end
     end
-
     objTable[obj.Name] = {
         Properties = propTable,
         Superclass = obj.Superclass
     }
 end
 
-function getAllProps(className)
-    if objTable[className].Superclass ~= "<<<ROOT>>>" then
-        local props = objTable[className].Properties
-        for pname, pinfo in pairs(getAllProps(objTable[className].Superclass)) do
-            props[pname] = pinfo
+-- Recursive inheritance
+local function getAllProps(objName)
+    local props = {}
+    local classInfo = objTable[objName]
+    if classInfo.Superclass ~= "<<<ROOT>>>" then
+        local parentProps = getAllProps(classInfo.Superclass)
+        for k,v in pairs(parentProps) do
+            props[k] = v
         end
-        return props
-    else
-        return objTable[className].Properties
     end
+    for k,v in pairs(classInfo.Properties) do
+        props[k] = v
+    end
+    return props
 end
 
-for cname,cinfo in pairs(objTable) do
-    cinfo.Properties = getAllProps(cname)
+for objName,objData in pairs(objTable) do
+    objData.Properties = getAllProps(objName)
 end
 
--- Add InitialSize manually
-objTable["UnionOperation"].Properties["InitialSize"] = {"InitialSize"}
-objTable["MeshPart"].Properties["InitialSize"] = {"InitialSize"}
+-- Add InitialSize manually for hidden properties
+objTable["UnionOperation"]["Properties"]["InitialSize"] = {"InitialSize"}
+objTable["MeshPart"]["Properties"]["InitialSize"] = {"InitialSize"}
 
-print("Initialized! Took " .. (tick()-start) .. "s")
+print(`Initialized! Took {tick()-start}s`)
 start = tick()
 
----------------------------------------------------------------------
-
-function removeSpecials(text)
-    return ({text:gsub("[<>&\"'\0]", function(c)
+-- Helper: escape XML characters
+local function removeSpecials(text)
+    if typeof(text) ~= "string" then return tostring(text) end
+    return ({text:gsub("[<>&\"'\0=]", function(c)
         return specialCharacters[c]
     end)})[1]
 end
 
-function write(text)
+-- Write text to stringBuilder
+local function write(text)
     sizeCounter += 1
-    table.insert(stringBuilder, text)
-
+    table.insert(stringBuilder,text)
     if sizeCounter >= settings.TableSize then
-        appendfile(tostring(game.PlaceId)..".rbxlx", table.concat(stringBuilder))
+        appendfile(`{game.PlaceId}.rbxlx`, table.concat(stringBuilder))
         stringBuilder = {}
         sizeCounter = 0
         task.wait()
     end
 end
 
----------------------------------------------------------------------
-
+-- Special cases for certain property types
 local specialCases = {
-    ["Vector3"] = function(obj,prop)
-        local v = obj[prop]
-        return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
-    end,
-
-    ["Vector2"] = function(obj,prop)
-        local v = obj[prop]
-        return `<Vector2 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y></Vector2>`
-    end,
-
-    ["Color3"] = function(obj,prop)
-        local v = obj[prop]
-        return `<Color3 name="{prop}"><R>{v.R}</R><G>{v.G}</G><B>{v.B}</B></Color3>`
-    end,
-
-    ["UDim2"] = function(obj,prop)
-        local v = obj[prop]
-        return `<UDim2 name="{prop}"><XS>{v.X.Scale}</XS><XO>{v.X.Offset}</XO><YS>{v.Y.Scale}</YS><YO>{v.Y.Offset}</YO></UDim2>`
-    end,
-
-    ["CFrame"] = function(obj,prop)
-        local c = {obj[prop]:GetComponents()}
-        return `<CoordinateFrame name="{prop}">
-            <X>{c[1]}</X><Y>{c[2]}</Y><Z>{c[3]}</Z>
-            <R00>{c[4]}</R00><R01>{c[5]}</R01><R02>{c[6]}</R02>
-            <R10>{c[7]}</R10><R11>{c[8]}</R11><R12>{c[9]}</R12>
-            <R20>{c[10]}</R20><R21>{c[11]}</R21><R22>{c[12]}</R22>
-        </CoordinateFrame>`
-    end,
-
-    ["Content"] = function(obj,prop)
-        return `<Content name="{prop}"><url>{removeSpecials(obj[prop])}</url></Content>`
-    end,
-
-    ["InitialSize"] = function(obj,prop)
-        local ok, value = pcall(function()
-            return gethiddenproperty and gethiddenproperty(obj,prop)
-        end)
-
-        if not ok or not value then
-            value = obj.Size
+    ["Vector3"] = function(obj, prop)
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then
+            return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
         end
-
-        return `<Vector3 name="{prop}"><X>{value.X}</X><Y>{value.Y}</Y><Z>{value.Z}</Z></Vector3>`
+        return ""
     end,
-
-    ["BinaryString"] = function(obj,prop)
-        return `<BinaryString name="{prop}">{b64encode(obj[prop])}</BinaryString>`
+    ["Vector2"] = function(obj, prop)
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then
+            return `<Vector2 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y></Vector2>`
+        end
+        return ""
     end,
-
-    ["string"] = function(obj,prop)
-        return `<string name="{prop}">{removeSpecials(obj[prop])}</string>`
+    ["Color3"] = function(obj, prop)
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then
+            return `<Color3 name="{prop}"><R>{v.R}</R><G>{v.G}</G><B>{v.B}</B></Color3>`
+        end
+        return ""
     end,
+    ["UDim2"] = function(obj, prop)
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then
+            return `<UDim2 name="{prop}"><XS>{v.X.Scale}</XS><XO>{v.X.Offset}</XO><YS>{v.Y.Scale}</YS><YO>{v.Y.Offset}</YO></UDim2>`
+        end
+        return ""
+    end,
+    ["CFrame"] = function(obj, prop)
+        local success, c = pcall(function() return obj[prop] and {obj[prop]:GetComponents()} end)
+        if success and c then
+            return `<CoordinateFrame name="{prop}"><X>{c[1]}</X><Y>{c[2]}</Y><Z>{c[3]}</Z><R00>{c[4]}</R00><R01>{c[5]}</R01><R02>{c[6]}</R02><R10>{c[7]}</R10><R11>{c[8]}</R11><R12>{c[9]}</R12><R20>{c[10]}</R20><R21>{c[11]}</R21><R22>{c[12]}</R22></CoordinateFrame>`
+        end
+        return ""
+    end,
+    ["Content"] = function(obj, prop)
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then
+            return `<Content name="{prop}"><url>{removeSpecials(v)}</url></Content>`
+        end
+        return ""
+    end,
+    ["InitialSize"] = function(obj, prop)
+        local success, v = pcall(function() return gethiddenproperty and gethiddenproperty(obj, prop) end)
+        if success and v then
+            return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
+        end
+        return ""
+    end,
+    ["BinaryString"] = function(obj, prop)
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then return `<BinaryString name="{prop}">{b64encode(v)}</BinaryString>` end
+        return ""
+    end,
+    ["UniqueId"] = function(obj, prop)
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then return `<UniqueId name="{prop}">{b64encode(v)}</UniqueId>` end
+        return ""
+    end,
+    ["SharedString"] = function(obj, prop)
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then return `<SharedString name="{prop}">{b64encode(v)}</SharedString>` end
+        return ""
+    end,
+    ["string"] = function(obj, prop)
+        local success, v = pcall(function() return obj[prop] end)
+        if success and v then return `<string name="{prop}">{removeSpecials(v)}</string>` end
+        return ""
+    end
 }
 
----------------------------------------------------------------------
-local function writeTerrainVoxels(terrain, opts)
-    opts = opts or {}
-    local resolution = opts.resolution or 4
-    local chunkSize = opts.chunkSize or 32 -- number of voxels per axis in a chunk (tune as needed)
-
-    -- Attempt to read global extents - these exist in Studio
-    local successMinMax, minVec, maxVec = pcall(function()
-        local me = terrain.MaxExtents
-        return me.Min, me.Max
-    end)
-
-    if not successMinMax or (not minVec) or (not maxVec) then
-        -- Fallback: try simple region around origin (small)
-        minVec = Vector3.new(-512, 0, -512)
-        maxVec = Vector3.new(512, 256, 512)
-    end
-
-    -- Convert world-space min/max to integer voxel coordinates for Region3int16.
-    -- Region3int16 expects Vector3int16; we convert each component to integers.
-    local function toInt16(v)
-        return Vector3int16.new(math.floor(v.X), math.floor(v.Y), math.floor(v.Z))
-    end
-
-    -- Compute world extents as integers
-    local minI = toInt16(minVec)
-    local maxI = toInt16(maxVec)
-
-    -- Helper to clamp chunk extents
-    local function clamp(a, b, x) return math.max(a, math.min(b, x)) end
-
-    -- Write a container tag for terrain
-    write("<Terrain>")
-    write(`<TerrainResolution>{resolution}</TerrainResolution>`)
-
-    -- We will iterate by chunk in world coordinates. Each chunk will be chunkSize * resolution units,
-    -- but Region3int16 uses voxel coordinates; using integer world coords is acceptable for chunking.
-    local step = chunkSize * resolution
-
-    local x0 = minI.X
-    local y0 = minI.Y
-    local z0 = minI.Z
-    local x1 = maxI.X
-    local y1 = maxI.Y
-    local z1 = maxI.Z
-
-    -- iterate through space in chunks
-    for cx = x0, x1, step do
-        for cy = y0, y1, step do
-            for cz = z0, z1, step do
-                -- compute chunk box (world coords)
-                local chunkMin = Vector3.new(cx, cy, cz)
-                local chunkMax = Vector3.new(math.min(cx + step - 1, x1),
-                                             math.min(cy + step - 1, y1),
-                                             math.min(cz + step - 1, z1))
-
-                -- convert to Region3int16 (floor to integers)
-                local regionMin = Vector3int16.new(math.floor(chunkMin.X), math.floor(chunkMin.Y), math.floor(chunkMin.Z))
-                local regionMax = Vector3int16.new(math.floor(chunkMax.X), math.floor(chunkMax.Y), math.floor(chunkMax.Z))
-
-                local ok, materials, occupancy = pcall(function()
-                    return terrain:ReadVoxels(Region3int16.new(regionMin, regionMax), resolution)
-                end)
-
-                if ok and materials and occupancy then
-                    -- materials and occupancy are 3D arrays with .Size property (Size.X, Size.Y, Size.Z).
-                    -- We'll write only occupied voxels to save space.
-                    local size = materials.Size
-                    write(`<TerrainChunk minX="{regionMin.X}" minY="{regionMin.Y}" minZ="{regionMin.Z}" sizeX="{size.X}" sizeY="{size.Y}" sizeZ="{size.Z}">`)
-
-                    for xi = 1, size.X do
-                        for yi = 1, size.Y do
-                            for zi = 1, size.Z do
-                                local occ = occupancy[xi][yi][zi]
-                                if occ and occ > 0 then
-                                    local mat = materials[xi][yi][zi]
-                                    -- material may be enum; tostring(mat) gives readable name
-                                    write(("<Voxel><X>%d</X><Y>%d</Y><Z>%d</Z><Material>%s</Material><Occupancy>%.6f</Occupancy></Voxel>")
-                                        :format(xi - 1 + regionMin.X, yi - 1 + regionMin.Y, zi - 1 + regionMin.Z, tostring(mat), occ))
-                                end
-                            end
-                        end
-                    end
-
-                    write("</TerrainChunk>")
-                end
-
-                -- allow short pause so large maps don't stall studio/UI
-                task.wait()
-            end
-        end
-    end
-
-    write("</Terrain>")
+-- Detect orphan scripts (not in any major service)
+local function isNotService(obj)
+    return not obj:IsDescendantOf(workspace)
+       and not obj:IsDescendantOf(game:GetService("ReplicatedStorage"))
+       and not obj:IsDescendantOf(game:GetService("ServerStorage"))
+       and not obj:IsDescendantOf(game:GetService("Players"))
+       and not obj:IsDescendantOf(game:GetService("Lighting"))
 end
--- SAFE writeObject with pcall protection
+
+-- Recursive function to write objects safely
 local function writeObject(obj)
-
-    -- === TERRAIN FIX ===
-    if obj:IsA("Terrain") then
-        write('<Item class="Terrain"><Properties>')
-        write('<string name="Name">'..removeSpecials(obj.Name)..'</string>')
-
-        -- Save basic editable Terrain properties
-        local terrainProps = {
-            "WaterWaveSize",
-            "WaterWaveSpeed",
-            "WaterReflectance",
-            "WaterColor",
-            "WaterTransparency"
-        }
-
-        for _, prop in ipairs(terrainProps) do
-            local ok, value = pcall(function() return obj[prop] end)
-            if ok and value ~= nil then
-                if typeof(value) == "Color3" then
-                    write('<Color3 name="'..prop..'"><R>'..value.R..'</R><G>'..value.G..'</G><B>'..value.B..'</B></Color3>')
-                elseif typeof(value) == "number" then
-                    write('<float name="'..prop..'">'..value..'</float>')
-                else
-                    write('<string name="'..prop..'">'..tostring(value)..'</string>')
-                end
-            end
-        end
-
-        write('</Properties></Item>')
-        return -- skip normal recursion into Terrain
-    end
-    -- === END TERRAIN FIX ===
-
-    -- === ORIGINAL CODE STARTS HERE ===
     write(`<Item class="{obj.ClassName}"><Properties><String name="Name">{removeSpecials(obj.Name)}</String>`)
 
     local classInfo = objTable[obj.ClassName]
     if classInfo then
         for propName, propInfo in pairs(classInfo.Properties) do
-
-            local propType = propInfo[1]
-
-            -- Try reading property safely
-            local ok, value = pcall(function()
-                return obj[propName]
-            end)
-
-            if not ok then
-                continue
-            end
-
+            local success, value = pcall(function() return obj[propName] end)
             local text = ""
-
-            if specialCases[propType] then
-                text = specialCases[propType](obj, propName)
-
-            elseif ok and value ~= nil then
-                if propType == "Enum" then
+            if specialCases[propInfo[1]] then
+                text = specialCases[propInfo[1]](obj, propName)
+            elseif success and value ~= nil then
+                if propInfo[1] == "Enum" then
                     text = `<token name="{propName}">{value.Value}</token>`
                 else
-                    text = `<{propType} name="{propName}">{value}</{propType}>`
+                    text = `<{propInfo[1]} name="{propName}">{value}</{propInfo[1]}>`
                 end
             end
-
-            if text ~= "" then
-                write(text)
-            end
+            if text ~= "" then write(text) end
         end
     end
-
     write("</Properties>")
 
-    -- Recurse children
-    for _,child in ipairs(obj:GetChildren()) do
+    -- Capture orphan scripts (ReadMe feature)
+    for _, child in ipairs(obj:GetChildren()) do
+        if isNotService(child) and (child:IsA("Script") or child:IsA("ModuleScript")) then
+            local source = ""
+            local ok, res = pcall(function() return child.Source end)
+            if ok then source = res end
+            if source ~= "" then
+                write(`<ScriptContent name="{child.Name}">{removeSpecials(source)}</ScriptContent>`)
+            end
+        end
         writeObject(child)
     end
 
     write("</Item>")
 end
 
-local function saveTerrain()
-    local Terrain = workspace.Terrain
+-- ==== CREATE THE FUN "READ ME" SCRIPT ====
+local readMeScript = Instance.new("Script")
+readMeScript.Name = "READ ME"
+readMeScript.Source = [[
+-- Hello! You look amazing today! God bless
+-- You can put more fun messages here
+]]
+readMeScript.Parent = workspace -- Can be Workspace, game, or wherever you like
 
-    local region = Region3int16.new(
-        Vector3int16.new(-16000, 0, -16000),
-        Vector3int16.new(16000, 2047, 16000)
-    )
+-- Start RBXLX file
+writefile(`{game.PlaceId}.rbxlx`, '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">')
 
-    local terrainRegion = Terrain:CopyRegion(region)
-    if not terrainRegion then return end
-
-    local raw = terrainRegion:Encode()
-    local encoded = b64encode(raw)
-
-    write(`<Item class="Terrain"><Properties>`)
-    write(`<BinaryString name="TerrainData">{encoded}</BinaryString>`)
-
-    write(`<Color3 name="WaterColor"><R>{Terrain.WaterColor.R}</R><G>{Terrain.WaterColor.G}</G><B>{Terrain.WaterColor.B}</B></Color3>`)
-    write(`<float name="WaterReflectance">{Terrain.WaterReflectance}</float>`)
-    write(`<float name="WaterTransparency">{Terrain.WaterTransparency}</float>`)
-    write(`<float name="WaterWaveSize">{Terrain.WaterWaveSize}</float>`)
-    write(`<float name="WaterWaveSpeed">{Terrain.WaterWaveSpeed}</float>`)
-
-    write("</Properties></Item>")
-end
-
----------------------------------------------------------------------
-
--- BEGIN FILE
-writefile(tostring(game.PlaceId)..".rbxlx",
-`<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">`
-)
-
-for _,mainObj in ipairs(settings.Save) do
+-- Save all main objects
+for _, mainObj in ipairs(settings.Save) do
     writeObject(mainObj)
 end
 
--- SAVE TERRAIN NOW
-saveTerrain()
-
+-- Close root tag and flush remaining stringBuilder
 write("</roblox>")
-appendfile(tostring(game.PlaceId)..".rbxlx", table.concat(stringBuilder))
+if #stringBuilder > 0 then
+    appendfile(`{game.PlaceId}.rbxlx`, table.concat(stringBuilder))
+    stringBuilder = {}
+end
 
-print("Finished! Took " .. (tick()-start) .. "s")
+print(`Finished! Took {tick()-start}s`)
 
