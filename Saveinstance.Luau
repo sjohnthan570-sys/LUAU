@@ -119,22 +119,28 @@ local specialCases = {
     end
 }
 
+local function removeSpecials(str)
+    if typeof(str) ~= "string" then return tostring(str) end
+    return str:gsub("[<>/&]", "")
+end
+
+-- Recursive function to write any Roblox object safely
 local function writeObject(obj)
-    -- Start the item with class and Name
+    -- Start item with class and Name
     write(`<Item class="{obj.ClassName}"><Properties><String name="Name">{removeSpecials(obj.Name)}</String>`)
 
-    -- Check if this object's class exists in objTable
+    -- Check if the class exists in objTable
     local classInfo = objTable[obj.ClassName]
     if classInfo then
         for propName, propInfo in pairs(classInfo.Properties) do
-            local value = obj[propName]  -- safely get the property
+            local value = obj[propName] -- safely get the property
 
             if value ~= nil then
-                -- Check if this property has a special case handler
+                -- Use special case handler if defined
                 if specialCases[propInfo[1]] then
                     write(specialCases[propInfo[1]](obj, propName))
                 else
-                    -- Handle enums differently from other property types
+                    -- Enum handling
                     if propInfo[1] == "Enum" then
                         write(`<token name="{propName}">{value.Value}</token>`)
                     else
@@ -142,7 +148,7 @@ local function writeObject(obj)
                     end
                 end
             else
-                -- Optional: warn about missing property but continue
+                -- Skip missing property, optional warning
                 print(`Warning: {propName} does not exist on {obj.ClassName}`)
             end
         end
@@ -155,7 +161,7 @@ local function writeObject(obj)
         writeObject(child)
     end
 
-    -- Close the Item tag
+    -- Close item tag
     write("</Item>")
 end
 
