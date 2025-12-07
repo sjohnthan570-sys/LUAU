@@ -17,8 +17,14 @@ local start = tick()
 local version = pcall(function() return game:HttpGet("https://setup.roblox.com/versionQTStudio", true) end)
 version = version and game:HttpGet("https://setup.roblox.com/versionQTStudio", true) or "default"
 local apiUrl = "https://setup.roblox.com/" .. version .. "-API-Dump.json"
-local jsonData = pcall(function() return game:HttpGet(apiUrl, true) end)
-jsonData = jsonData and game:GetService("HttpService"):JSONDecode(jsonData) or {Classes = {}}
+local success, jsonRaw = pcall(function() return game:HttpGet(apiUrl, true) end)
+local jsonData = {}
+if success and jsonRaw then
+    jsonData = game:GetService("HttpService"):JSONDecode(jsonRaw)
+else
+    jsonData = {Classes = {}}
+end
+
 
 -- String builder
 local sizeCounter = 0
