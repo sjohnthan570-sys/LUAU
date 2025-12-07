@@ -2,7 +2,7 @@
     Universal Safe SaveInstance Script
     Fully crash-proof, silent, captures orphaned scripts,
     saves ModuleScript stubs, attributes, materials, CollectionService tags,
-    properly handles MeshParts/SpecialMeshes, and shows a progress bar.
+    properly handles MeshParts/SpecialMeshes, and shows progress in ScreenGui.
 --]]
 
 local settings = {
@@ -11,28 +11,38 @@ local settings = {
 }
 
 local b64encode = crypt and crypt.base64encode or function() return "" end
-local b64decode = crypt and crypt.base64decode or function() return "" end
 local start = tick()
 
 -- Progress GUI
-local player = game.Players.LocalPlayer
-local screenGui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
-screenGui.Name = "SaveProgressGui"
-local progressLabel = Instance.new("TextLabel", screenGui)
-progressLabel.Size = UDim2.new(0, 200, 0, 50)
-progressLabel.Position = UDim2.new(0.5, -100, 0, 10)
-progressLabel.BackgroundTransparency = 0.5
-progressLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-progressLabel.TextColor3 = Color3.fromRGB(255,255,255)
-progressLabel.TextScaled = true
-progressLabel.Text = "Progress: 0%"
+local player, progressLabel
+local Players = game:FindFirstChild("Players")
+if Players then
+    player = Players:FindFirstChildOfClass("Player") or Players.LocalPlayer
+end
+
+local screenGui
+if player then
+    screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "SaveProgressGui"
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+
+    progressLabel = Instance.new("TextLabel")
+    progressLabel.Size = UDim2.new(0, 200, 0, 50)
+    progressLabel.Position = UDim2.new(0.5, -100, 0, 10)
+    progressLabel.BackgroundTransparency = 0.5
+    progressLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    progressLabel.TextColor3 = Color3.fromRGB(255,255,255)
+    progressLabel.TextScaled = true
+    progressLabel.Text = "Progress: 0%"
+    progressLabel.Parent = screenGui
+end
 
 -- Fetch Roblox class dump
 local version = game:HttpGet("https://setup.roblox.com/versionQTStudio", true)
-assert(version and version ~= "", "Failed to get Roblox version")
+assert(version ~= "", "Failed to get Roblox version")
 local apiUrl = "https://setup.roblox.com/" .. version .. "-API-Dump.json"
 local jsonData = game:HttpGet(apiUrl, true)
-assert(jsonData and jsonData ~= "", "Failed to fetch API dump")
+assert(jsonData ~= "", "Failed to fetch API dump")
 local decoded = game:GetService("HttpService"):JSONDecode(jsonData)
 
 -- String builder
@@ -134,7 +144,7 @@ local specialCases = {
     end
 }
 
--- Recursive writer
+-- Total object count for progress
 local totalObjects = 0
 local function countObjects(obj)
     totalObjects += 1
@@ -142,13 +152,18 @@ local function countObjects(obj)
         countObjects(child)
     end
 end
-for _, mainObj in ipairs(settings.Save) do countObjects(mainObj) end
+for _, obj in ipairs(settings.Save) do countObjects(obj) end
+
 local currentObject = 0
-
-local function writeObject(obj)
+local function updateProgress()
     currentObject += 1
-    progressLabel.Text = `Progress: {math.floor((currentObject/totalObjects)*100)}%`
+    if progressLabel then
+        progressLabel.Text = `Progress: {math.floor((currentObject/totalObjects)*100)}%`
+    end
+end
 
+-- Recursive writer
+local function writeObject(obj)
     write(`<Item class="{obj.ClassName}"><Properties>`)
     write(`<String name="Name">{removeSpecials(obj.Name)}</String>`)
 
@@ -182,7 +197,7 @@ local function writeObject(obj)
         write(`<Attribute name="{attrName}">{removeSpecials(tostring(val))}</Attribute>`)
     end
 
-    -- Save CollectionService tags
+    -- CollectionService Tags
     local CollectionService = game:GetService("CollectionService")
     local tags = {}
     pcall(function() tags = CollectionService:GetTags(obj) end)
@@ -190,7 +205,7 @@ local function writeObject(obj)
         write(`<Tag>{removeSpecials(tag)}</Tag>`)
     end
 
-    -- Save Scripts & ModuleScripts
+    -- Scripts & ModuleScripts
     for _, child in ipairs(obj:GetChildren()) do
         if child:IsA("Script") then
             local ok, source = pcall(function() return child.Source end)
@@ -228,6 +243,9 @@ local function writeObject(obj)
     end
 
     write("</Item>")
+
+    -- Update progress
+    updateProgress()
 end
 
 -- Fun ReadMe Script
