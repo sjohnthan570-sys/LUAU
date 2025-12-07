@@ -2,8 +2,8 @@
     Universal Safe SaveInstance Script
     Fully crash-proof, silent, captures orphaned scripts,
     saves ModuleScript stubs, attributes, materials, CollectionService tags,
-    properly handles MeshParts/SpecialMeshes/FileMeshes,
-    and guarantees well-formed XML for RBXLX, including BasePart colors.
+    handles MeshParts/SpecialMeshes/FileMeshes,
+    and exports BrickColor properly for every part.
 --]]
 
 local settings = {
@@ -152,17 +152,13 @@ local function writeObject(obj)
         end
     end
 
-    -- Force BasePart colors
-    if obj:IsA("BasePart") then
-        local okC, c = pcall(function() return obj.Color end)
-        if okC and c then
-            write(`<Color3 name="Color">{c.R} {c.G} {c.B}</Color3>`)
+    -- BrickColor fix
+    pcall(function()
+        if obj.BrickColor then
+            write(`<BrickColor name="BrickColor">{removeSpecials(tostring(obj.BrickColor))}</BrickColor>`)
+            write(`<Color3 name="Color">{obj.Color.R} {obj.Color.G} {obj.Color.B}</Color3>`)
         end
-        local okB, b = pcall(function() return obj.BrickColor end)
-        if okB and b then
-            write(`<token name="BrickColor">{b.Name}</token>`)
-        end
-    end
+    end)
 
     -- Material
     pcall(function() if obj.Material then write(`<Enum name="Material">{tostring(obj.Material)}</Enum>`) end end)
