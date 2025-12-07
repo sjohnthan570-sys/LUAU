@@ -185,49 +185,118 @@ end
 
 -- Recursive function to write objects safely
 local function writeObject(obj)
-    write(`<Item class="{obj.ClassName}"><Properties><String name="Name">{removeSpecials(obj.Name)}</String>`)
+    -- Start object
+    write(`<Item class="{obj.ClassName}"><Properties>`)
 
+    -- Always save the name
+    write(`<String name="Name">{removeSpecials(obj.Name)}</String>`)
+
+    ----------------------------------------------------------------
+    -- 🔹 SAFE PROPERTY EXPORT (only properties guaranteed to exist)
+    ----------------------------------------------------------------
     local classInfo = objTable[obj.ClassName]
     if classInfo then
         for propName, propInfo in pairs(classInfo.Properties) do
-
-            -- Strip ModuleScript + Script source
-            if (obj:IsA("ModuleScript") or obj:IsA("Script")) and propName == "Source" then
-                continue
-            end
-
-            -- Safe read
-            local success, value = pcall(function()
-                return obj[propName]
-            end)
-
-            local output = ""
-
+            local success, value = pcall(function() return obj[propName] end)
             if success and value ~= nil then
-                if specialCases[propInfo[1]] then
-                    output = specialCases[propInfo[1]](obj, propName)
-                elseif propInfo[1] == "Enum" then
+                local typeName = propInfo[1]
+                local output = ""
+
+                if specialCases[typeName] then
+                    output = specialCases[typeName](obj, propName)
+
+                elseif typeName == "Enum" then
                     output = `<token name="{propName}">{value.Value}</token>`
+
                 else
-                    output = `<{propInfo[1]} name="{propName}">{value}</{propInfo[1]}>`
+                    output = `<{typeName} name="{propName}">{value}</{typeName}>`
                 end
+
+                if output ~= "" then write(output) end
+            end
+        end
+    end
+
+    ----------------------------------------------------------------
+    -- 🔹 MESH PART FIX — PREVENTS GIANT / STRETCHED / MERGED PARTS
+    ----------------------------------------------------------------
+    if obj:IsA("MeshPart") then
+        local okSize, size = pcall(function() return obj.Size end)
+        if okSize then
+            write(`<Vector3 name="Size">{size.X} {size.Y} {size.Z}</Vector3>`)
+        end
+
+        local okMeshId, meshId = pcall(function() return obj.MeshId end)
+        if okMeshId then
+            write(`<Content name="MeshId">{meshId}</Content>`)
+        end
+
+        local okTex, tex = pcall(function() return obj.TextureID end)
+        if okTex then
+            write(`<Content name="TextureID">{tex}</Content>`)
+        end
+    end
+
+    ----------------------------------------------------------------
+    -- 🔹 SPECIAL MESH / FILE MESH EXPORT
+    ----------------------------------------------------------------
+    if obj:IsA("SpecialMesh") or obj:IsA("FileMesh") then
+        local okScale, scale = pcall(function() return obj.Scale end)
+        if okScale then
+            write(`<Vector3 name="Scale">{scale.X} {scale.Y} {scale.Z}</Vector3>`)
+        end
+
+        local okOffset, offset = pcall(function() return obj.Offset end)
+        if okOffset then
+            write(`<Vector3 name="Offset">{offset.X} {offset.Y} {offset.Z}</Vector3>`)
+        end
+
+        local okMeshId, meshId = pcall(function() return obj.MeshId end)
+        if okMeshId then
+            write(`<Content name="MeshId">{meshId}</Content>`)
+        end
+
+        local okTex, tex = pcall(function() return obj.TextureId end)
+        if okTex then
+            write(`<Content name="TextureId">{tex}</Content>`)
+        end
+    end
+
+    ----------------------------------------------------------------
+    -- 🔹 SCRIPT & MODULESCRIPT EXPORT
+    -- Normal Script      = Saves real source
+    -- ModuleScript       = Saves ONLY stub (name + parent) for security
+    ----------------------------------------------------------------
+    for _, child in ipairs(obj:GetChildren()) do
+        
+        -- Save Script sources normally
+        if child:IsA("Script") then
+            local ok, source = pcall(function() return child.Source end)
+            if ok and source and source ~= "" then
+                write(`<ScriptContent name="{child.Name}">{removeSpecials(source)}</ScriptContent>`)
             end
 
-            if output ~= "" then
-                write(output)
-            end
+        -- Save ModuleScripts WITHOUT CONTENT
+        elseif child:IsA("ModuleScript") then
+            write(`<ModuleStub name="{removeSpecials(child.Name)}"></ModuleStub>`)
         end
     end
 
     write("</Properties>")
 
-    -- Write children normally (NO SOURCE DUMP)
+    ----------------------------------------------------------------
+    -- 🔹 RECURSION (write children after handling scripts)
+    ----------------------------------------------------------------
     for _, child in ipairs(obj:GetChildren()) do
-        writeObject(child)
+        if isNotService(child) then
+            writeObject(child)
+        end
     end
 
+    -- End object
     write("</Item>")
 end
+
 
 
 -- ==== CREATE THE FUN "READ ME" SCRIPT ====
