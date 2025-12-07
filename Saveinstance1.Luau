@@ -2,7 +2,7 @@
     Universal Safe SaveInstance Script
     Fully crash-proof, silent, captures orphaned scripts,
     saves ModuleScript stubs, attributes, materials, CollectionService tags,
-    properly handles MeshParts/SpecialMeshes, and shows progress in ScreenGui.
+    and properly handles MeshParts/SpecialMeshes to prevent errors.
 --]]
 
 local settings = {
@@ -13,43 +13,18 @@ local settings = {
 local b64encode = crypt and crypt.base64encode or function() return "" end
 local start = tick()
 
--- Progress GUI
-local player, progressLabel
-local Players = game:FindFirstChild("Players")
-if Players then
-    player = Players:FindFirstChildOfClass("Player") or Players.LocalPlayer
-end
-
-local screenGui
-if player then
-    screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "SaveProgressGui"
-    screenGui.Parent = player:WaitForChild("PlayerGui")
-
-    progressLabel = Instance.new("TextLabel")
-    progressLabel.Size = UDim2.new(0, 200, 0, 50)
-    progressLabel.Position = UDim2.new(0.5, -100, 0, 10)
-    progressLabel.BackgroundTransparency = 0.5
-    progressLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    progressLabel.TextColor3 = Color3.fromRGB(255,255,255)
-    progressLabel.TextScaled = true
-    progressLabel.Text = "Progress: 0%"
-    progressLabel.Parent = screenGui
-end
-
 -- Fetch Roblox class dump
-local version = game:HttpGet("https://setup.roblox.com/versionQTStudio", true)
-assert(version ~= "", "Failed to get Roblox version")
+local version = pcall(function() return game:HttpGet("https://setup.roblox.com/versionQTStudio", true) end)
+version = version and game:HttpGet("https://setup.roblox.com/versionQTStudio", true) or "default"
 local apiUrl = "https://setup.roblox.com/" .. version .. "-API-Dump.json"
-local jsonData = game:HttpGet(apiUrl, true)
-assert(jsonData ~= "", "Failed to fetch API dump")
-local decoded = game:GetService("HttpService"):JSONDecode(jsonData)
+local jsonData = pcall(function() return game:HttpGet(apiUrl, true) end)
+jsonData = jsonData and game:GetService("HttpService"):JSONDecode(jsonData) or {Classes = {}}
 
 -- String builder
 local sizeCounter = 0
 local stringBuilder = {}
 
--- Characters to escape
+-- Escape characters
 local specialCharacters = {
     ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;", ['"'] = "&quot;", ["'"] = "&apos;", ["\0"] = "", ["="] = ""
 }
@@ -58,13 +33,13 @@ local ignoredProperties = {"Name","Parent","TimeOfDay"}
 
 -- Build object table
 local objTable = {}
-for _, obj in pairs(decoded.Classes) do
+for _, obj in pairs(jsonData.Classes) do
     local propTable = {}
-    for _, member in pairs(obj.Members) do
+    for _, member in pairs(obj.Members or {}) do
         if not table.find(member.Tags or {}, "NotScriptable") 
             and member.MemberType == "Property" 
             and not table.find(ignoredProperties, member.Name)
-            and member.Serialization["CanLoad"] then
+            and member.Serialization and member.Serialization["CanLoad"] then
             propTable[member.Name] = member.ValueType.Category == "Enum" and {"Enum", member.ValueType.Name} or {member.ValueType.Name}
         end
     end
@@ -75,10 +50,12 @@ end
 local function getAllProps(objName)
     local props = {}
     local classInfo = objTable[objName]
-    if classInfo.Superclass ~= "<<<ROOT>>>" then
+    if classInfo and classInfo.Superclass ~= "<<<ROOT>>>" and objTable[classInfo.Superclass] then
         for k,v in pairs(getAllProps(classInfo.Superclass)) do props[k]=v end
     end
-    for k,v in pairs(classInfo.Properties) do props[k]=v end
+    if classInfo then
+        for k,v in pairs(classInfo.Properties) do props[k]=v end
+    end
     return props
 end
 
@@ -111,7 +88,7 @@ local function write(text)
     end
 end
 
--- Special cases for properties
+-- Special cases
 local specialCases = {
     Vector3 = function(obj, prop)
         local ok,v = pcall(function() return obj[prop] end)
@@ -144,24 +121,6 @@ local specialCases = {
     end
 }
 
--- Total object count for progress
-local totalObjects = 0
-local function countObjects(obj)
-    totalObjects += 1
-    for _, child in ipairs(obj:GetChildren()) do
-        countObjects(child)
-    end
-end
-for _, obj in ipairs(settings.Save) do countObjects(obj) end
-
-local currentObject = 0
-local function updateProgress()
-    currentObject += 1
-    if progressLabel then
-        progressLabel.Text = `Progress: {math.floor((currentObject/totalObjects)*100)}%`
-    end
-end
-
 -- Recursive writer
 local function writeObject(obj)
     write(`<Item class="{obj.ClassName}"><Properties>`)
@@ -186,18 +145,16 @@ local function writeObject(obj)
         end
     end
 
-    -- Save Material
-    if pcall(function() return obj.Material end) then
-        write(`<Enum name="Material">{tostring(obj.Material)}</Enum>`)
-    end
+    -- Material
+    pcall(function() if obj.Material then write(`<Enum name="Material">{tostring(obj.Material)}</Enum>`) end end)
 
-    -- Save Attributes
+    -- Attributes
     for _, attrName in ipairs(obj:GetAttributes()) do
         local val = obj:GetAttribute(attrName)
         write(`<Attribute name="{attrName}">{removeSpecials(tostring(val))}</Attribute>`)
     end
 
-    -- CollectionService Tags
+    -- CollectionService tags
     local CollectionService = game:GetService("CollectionService")
     local tags = {}
     pcall(function() tags = CollectionService:GetTags(obj) end)
@@ -205,7 +162,7 @@ local function writeObject(obj)
         write(`<Tag>{removeSpecials(tag)}</Tag>`)
     end
 
-    -- Scripts & ModuleScripts
+    -- Scripts
     for _, child in ipairs(obj:GetChildren()) do
         if child:IsA("Script") then
             local ok, source = pcall(function() return child.Source end)
@@ -219,36 +176,24 @@ local function writeObject(obj)
 
     -- MeshPart / SpecialMesh fix
     if obj:IsA("MeshPart") or obj:IsA("SpecialMesh") or obj:IsA("FileMesh") then
-        local okMesh, meshId = pcall(function() return obj.MeshId end)
-        if okMesh and meshId then write(`<Content name="MeshId">{meshId}</Content>`) end
-
-        local okTex, texId = pcall(function() return obj.TextureID end)
-        if okTex and texId then write(`<Content name="TextureID">{texId}</Content>`) end
-
-        local okSize, size = pcall(function() return obj.Size end)
-        if okSize and size then write(`<Vector3 name="Size">{size.X} {size.Y} {size.Z}</Vector3>`) end
-
-        local okScale, scale = pcall(function() return obj.Scale end)
-        if okScale and scale then write(`<Vector3 name="Scale">{scale.X} {scale.Y} {scale.Z}</Vector3>`) end
-
-        local okOffset, offset = pcall(function() return obj.Offset end)
-        if okOffset and offset then write(`<Vector3 name="Offset">{offset.X} {offset.Y} {offset.Z}</Vector3>`) end
+        pcall(function()
+            if obj.MeshId then write(`<Content name="MeshId">{obj.MeshId}</Content>`) end
+            if obj.TextureID then write(`<Content name="TextureID">{obj.TextureID}</Content>`) end
+            if obj.Size then write(`<Vector3 name="Size">{obj.Size.X} {obj.Size.Y} {obj.Size.Z}</Vector3>`) end
+            if obj.Scale then write(`<Vector3 name="Scale">{obj.Scale.X} {obj.Scale.Y} {obj.Scale.Z}</Vector3>`) end
+            if obj.Offset then write(`<Vector3 name="Offset">{obj.Offset.X} {obj.Offset.Y} {obj.Offset.Z}</Vector3>`) end
+        end)
     end
 
     write("</Properties>")
 
-    -- Recurse
-    for _, child in ipairs(obj:GetChildren()) do
-        writeObject(child)
-    end
+    -- Recurse into children
+    for _, child in ipairs(obj:GetChildren()) do writeObject(child) end
 
     write("</Item>")
-
-    -- Update progress
-    updateProgress()
 end
 
--- Fun ReadMe Script
+-- Fun ReadMe
 local readMeScript = Instance.new("Script")
 readMeScript.Name = "READ ME"
 readMeScript.Source = [[
@@ -260,12 +205,12 @@ readMeScript.Parent = workspace
 -- Start RBXLX
 writefile(`{game.PlaceId}.rbxlx`, '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">')
 
--- Save main objects
+-- Save all main objects
 for _, mainObj in ipairs(settings.Save) do writeObject(mainObj) end
 
 write("</roblox>")
 
--- Flush remaining
+-- Flush
 if #stringBuilder>0 then
     appendfile(`{game.PlaceId}.rbxlx`, table.concat(stringBuilder))
     stringBuilder = {}
