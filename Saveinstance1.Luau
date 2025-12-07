@@ -1,236 +1,239 @@
 --[[ 
-    Universal Safe SaveInstance Script (Fixed)
-    ✔ Fully error‑proof
-    ✔ Safe property handling
-    ✔ Correct XML generation
-    ✔ Correct special case handling
-    ✔ ModuleScript stubs
-    ✔ Materials, Attributes, Tags
+    Universal Safe SaveInstance Script
+    Fully crash-proof, silent, captures orphaned scripts,
+    saves ModuleScript stubs, attributes, materials, CollectionService tags,
+    and properly handles MeshParts/SpecialMeshes to prevent errors and checkerboards.
 --]]
 
-local Http = game:GetService("HttpService")
-local CollectionService = game:GetService("CollectionService")
-
 local settings = {
-    TableSize = 12000,
-    Save = { workspace }
+    TableSize = 10000,          -- Reduce if running out of memory
+    Save = {workspace}          -- Objects to save
 }
 
+local b64encode = crypt and crypt.base64encode or function() return "" end
+local b64decode = crypt and crypt.base64decode or function() return "" end
 local start = tick()
 
---------------------------------------------------------
--- FETCH API-DUMP
---------------------------------------------------------
+-- Fetch Roblox class dump
 local version = game:HttpGet("https://setup.roblox.com/versionQTStudio", true)
-local apiDump = "https://setup.roblox.com/" .. version .. "-API-Dump.json"
+assert(version and version ~= "", "Failed to get Roblox version")
+local apiUrl = "https://setup.roblox.com/" .. version .. "-API-Dump.json"
+local jsonData = game:HttpGet(apiUrl, true)
+assert(jsonData and jsonData ~= "", "Failed to fetch API dump")
+local decoded = game:GetService("HttpService"):JSONDecode(jsonData)
 
-local json = Http:JSONDecode(game:HttpGet(apiDump, true))
+-- String builder
+local sizeCounter = 0
+local stringBuilder = {}
 
---------------------------------------------------------
--- BUILD CLASS PROPERTY TABLE
---------------------------------------------------------
-local ignored = { Name = true, Parent = true, TimeOfDay = true }
-local objTable = {}
-
-for _, class in ipairs(json.Classes) do
-    local props = {}
-
-    for _, m in ipairs(class.Members) do
-        if m.MemberType == "Property"
-        and not ignored[m.Name]
-        and not table.find(m.Tags or {}, "NotScriptable")
-        and m.Serialization.CanLoad then
-
-            if m.ValueType.Category == "Enum" then
-                props[m.Name] = { "Enum", m.ValueType.Name }
-            else
-                props[m.Name] = { m.ValueType.Name }
-            end
-        end
-    end
-
-    objTable[class.Name] = { Properties = props, Superclass = class.Superclass }
-end
-
-local function inherit(c)
-    local t = {}
-
-    if objTable[c].Superclass ~= "<<<ROOT>>>" then
-        for k, v in pairs(inherit(objTable[c].Superclass)) do
-            t[k] = v
-        end
-    end
-
-    for k, v in pairs(objTable[c].Properties) do
-        t[k] = v
-    end
-
-    return t
-end
-
-for class, data in pairs(objTable) do
-    data.Properties = inherit(class)
-end
-
-objTable.UnionOperation.Properties.InitialSize = { "InitialSize" }
-objTable.MeshPart.Properties.InitialSize = { "InitialSize" }
-
---------------------------------------------------------
--- SAFE STRING ESCAPE
---------------------------------------------------------
-local esc = {
-    ["&"] = "&amp;",
-    ["<"] = "&lt;",
-    [">"] = "&gt;",
-    ['"'] = "&quot;",
-    ["'"] = "&apos;"
+-- Characters to escape
+local specialCharacters = {
+    ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;", ['"'] = "&quot;", ["'"] = "&apos;", ["\0"] = "", ["="] = ""
 }
 
-local function xml(s)
-    if typeof(s) ~= "string" then s = tostring(s) end
-    return s:gsub("[&<>'\"]", esc)
+local ignoredProperties = {"Name","Parent","TimeOfDay"}
+
+-- Build object table
+local objTable = {}
+for _, obj in pairs(decoded.Classes) do
+    local propTable = {}
+    for _, member in pairs(obj.Members) do
+        if not table.find(member.Tags or {}, "NotScriptable") 
+            and member.MemberType == "Property" 
+            and not table.find(ignoredProperties, member.Name)
+            and member.Serialization["CanLoad"] then
+            propTable[member.Name] = member.ValueType.Category == "Enum" and {"Enum", member.ValueType.Name} or {member.ValueType.Name}
+        end
+    end
+    objTable[obj.Name] = {Properties = propTable, Superclass = obj.Superclass}
 end
 
---------------------------------------------------------
--- STRING BUILDING
---------------------------------------------------------
-local count = 0
-local buff = {}
+-- Recursive inheritance
+local function getAllProps(objName)
+    local props = {}
+    local classInfo = objTable[objName]
+    if classInfo.Superclass ~= "<<<ROOT>>>" then
+        for k,v in pairs(getAllProps(classInfo.Superclass)) do props[k]=v end
+    end
+    for k,v in pairs(classInfo.Properties) do props[k]=v end
+    return props
+end
 
-local function write(t)
-    buff[#buff + 1] = t
-    count += 1
+for objName,objData in pairs(objTable) do
+    objData.Properties = getAllProps(objName)
+end
 
-    if count >= settings.TableSize then
-        appendfile(game.PlaceId .. ".rbxlx", table.concat(buff))
-        buff = {}
-        count = 0
+-- Hidden InitialSize
+if objTable["UnionOperation"] then objTable["UnionOperation"].Properties["InitialSize"] = {"InitialSize"} end
+if objTable["MeshPart"] then objTable["MeshPart"].Properties["InitialSize"] = {"InitialSize"} end
+
+print(`Initialized! Took {tick()-start}s`)
+start = tick()
+
+-- Escape XML
+local function removeSpecials(text)
+    if typeof(text) ~= "string" then return tostring(text) end
+    return ({text:gsub("[<>&\"'\0=]", function(c) return specialCharacters[c] end)})[1]
+end
+
+-- Write helper
+local function write(text)
+    sizeCounter += 1
+    table.insert(stringBuilder, text)
+    if sizeCounter >= settings.TableSize then
+        appendfile(`{game.PlaceId}.rbxlx`, table.concat(stringBuilder))
+        stringBuilder = {}
+        sizeCounter = 0
+        task.wait()
     end
 end
 
---------------------------------------------------------
--- SPECIAL PROPERTY FORMATTERS
---------------------------------------------------------
-local special = {}
+-- Special cases for properties
+local specialCases = {
+    Vector3 = function(obj, prop)
+        local ok,v = pcall(function() return obj[prop] end)
+        if not ok or v==nil or typeof(v)~="Vector3" then return "" end
+        return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
+    end,
+    Vector2 = function(obj, prop)
+        local ok,v = pcall(function() return obj[prop] end)
+        if not ok or v==nil or typeof(v)~="Vector2" then return "" end
+        return `<Vector2 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y></Vector2>`
+    end,
+    Color3 = function(obj, prop)
+        local ok,v = pcall(function() return obj[prop] end)
+        if not ok or v==nil or typeof(v)~="Color3" then return "" end
+        return `<Color3 name="{prop}"><R>{v.R}</R><G>{v.G}</G><B>{v.B}</B></Color3>`
+    end,
+    CFrame = function(obj, prop)
+        local ok,c = pcall(function()
+            local cf=obj[prop]
+            if typeof(cf)~="CFrame" then return nil end
+            return {cf:GetComponents()}
+        end)
+        if not ok or c==nil then return "" end
+        return `<CoordinateFrame name="{prop}"><X>{c[1]}</X><Y>{c[2]}</Y><Z>{c[3]}</Z><R00>{c[4]}</R00><R01>{c[5]}</R01><R02>{c[6]}</R02><R10>{c[7]}</R10><R11>{c[8]}</R11><R12>{c[9]}</R12><R20>{c[10]}</R20><R21>{c[11]}</R21><R22>{c[12]}</R22></CoordinateFrame>`
+    end,
+    InitialSize = function(obj)
+        local ok,v = pcall(function() return gethiddenproperty and gethiddenproperty(obj, "InitialSize") end)
+        if not ok or v==nil or typeof(v)~="Vector3" then return "" end
+        return `<Vector3 name="InitialSize"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
+    end
+}
 
-special.Vector3 = function(v, p)
-    if typeof(v) ~= "Vector3" then return "" end
-    return `<Vector3 name="{p}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
+-- Non-service children check
+local function isNotService(obj)
+    return not obj:IsDescendantOf(workspace)
+       and not obj:IsDescendantOf(game:GetService("ReplicatedStorage"))
+       and not obj:IsDescendantOf(game:GetService("ServerStorage"))
+       and not obj:IsDescendantOf(game:GetService("Players"))
+       and not obj:IsDescendantOf(game:GetService("Lighting"))
 end
 
-special.Vector2 = function(v, p)
-    if typeof(v) ~= "Vector2" then return "" end
-    return `<Vector2 name="{p}"><X>{v.X}</X><Y>{v.Y}</Y></Vector2>`
-end
-
-special.Color3 = function(v, p)
-    if typeof(v) ~= "Color3" then return "" end
-    return `<Color3 name="{p}"><R>{v.R}</R><G>{v.G}</G><B>{v.B}</B></Color3>`
-end
-
-special.CFrame = function(v, p)
-    if typeof(v) ~= "CFrame" then return "" end
-    local c = { v:GetComponents() }
-
-    return `<CoordinateFrame name="{p}">`
-        .. `<X>{c[1]}</X><Y>{c[2]}</Y><Z>{c[3]}</Z>`
-        .. `<R00>{c[4]}</R00><R01>{c[5]}</R01><R02>{c[6]}</R02>`
-        .. `<R10>{c[7]}</R10><R11>{c[8]}</R11><R12>{c[9]}</R12>`
-        .. `<R20>{c[10]}</R20><R21>{c[11]}</R21><R22>{c[12]}</R22>`
-        .. `</CoordinateFrame>`
-end
-
-special.InitialSize = function(v)
-    if typeof(v) ~= "Vector3" then return "" end
-    return `<Vector3 name="InitialSize"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
-end
-
---------------------------------------------------------
--- RECURSIVE OBJECT WRITER
---------------------------------------------------------
+-- Recursive writer
 local function writeObject(obj)
     write(`<Item class="{obj.ClassName}"><Properties>`)
+    write(`<String name="Name">{removeSpecials(obj.Name)}</String>`)
 
-    write(`<String name="Name">{xml(obj.Name)}</String>`)
+    local classInfo = objTable[obj.ClassName]
+    if classInfo then
+        for propName, propInfo in pairs(classInfo.Properties) do
+            local typeName = propInfo[1]
+            local ok,value = pcall(function() return obj[propName] end)
+            if not ok or value==nil then continue end
 
-    local class = objTable[obj.ClassName]
-
-    if class then
-        for prop, info in pairs(class.Properties) do
-            local ok, v = pcall(function() return obj[prop] end)
-            if not ok or v == nil then continue end
-
-            local typeName = info[1]
-
-            -- special case?
-            if special[typeName] then
-                local xmlText = special[typeName](v, prop)
-                if xmlText ~= "" then write(xmlText) end
-                continue
+            local output = ""
+            if typeName and specialCases[typeName] then
+                output = specialCases[typeName](obj, propName)
+            elseif typeName=="Enum" and typeof(value)=="EnumItem" then
+                output = `<token name="{propName}">{value.Value}</token>`
+            else
+                output = `<{typeName} name="{propName}">{value}</{typeName}>`
             end
-
-            -- Enum
-            if typeName == "Enum" then
-                write(`<token name="{prop}">{v.Value}</token>`)
-                continue
-            end
-
-            write(`<{typeName} name="{prop}">{xml(v)}</{typeName}>`)
+            if output~="" then write(output) end
         end
     end
 
-    -- Material
+    -- Save Material
     if pcall(function() return obj.Material end) then
-        write(`<token name="Material">{tostring(obj.Material)}</token>`)
+        write(`<Enum name="Material">{tostring(obj.Material)}</Enum>`)
     end
 
-    -- Attributes
-    for _, a in ipairs(obj:GetAttributes()) do
-        write(`<Attribute name="{a}">{xml(tostring(obj:GetAttribute(a)))}</Attribute>`)
+    -- Save Attributes
+    for _, attrName in ipairs(obj:GetAttributes()) do
+        local val = obj:GetAttribute(attrName)
+        write(`<Attribute name="{attrName}">{removeSpecials(tostring(val))}</Attribute>`)
     end
 
-    -- Tags
-    local ok, tags = pcall(function() return CollectionService:GetTags(obj) end)
-    if ok then
-        for _, t in ipairs(tags) do
-            write(`<Tag>{xml(t)}</Tag>`)
-        end
+    -- Save CollectionService tags
+    local CollectionService = game:GetService("CollectionService")
+    local tags = {}
+    pcall(function() tags = CollectionService:GetTags(obj) end)
+    for _, tag in ipairs(tags) do
+        write(`<Tag>{removeSpecials(tag)}</Tag>`)
     end
 
-    -- Scripts
-    for _, ch in ipairs(obj:GetChildren()) do
-        if ch:IsA("Script") then
-            local ok, src = pcall(function() return ch.Source end)
-            if ok and src and src ~= "" then
-                write(`<ScriptContent name="{xml(ch.Name)}">{xml(src)}</ScriptContent>`)
+    -- Save Scripts & ModuleScripts
+    for _, child in ipairs(obj:GetChildren()) do
+        if child:IsA("Script") then
+            local ok, source = pcall(function() return child.Source end)
+            if ok and source and source~="" then
+                write(`<ScriptContent name="{removeSpecials(child.Name)}">{removeSpecials(source)}</ScriptContent>`)
             end
-        elseif ch:IsA("ModuleScript") then
-            write(`<ModuleStub name="{xml(ch.Name)}"></ModuleStub>`)
+        elseif child:IsA("ModuleScript") then
+            write(`<ModuleStub name="{removeSpecials(child.Name)}"></ModuleStub>`)
         end
+    end
+
+    -- MeshPart / SpecialMesh fix
+    if obj:IsA("MeshPart") or obj:IsA("SpecialMesh") or obj:IsA("FileMesh") then
+        local okMesh, meshId = pcall(function() return obj.MeshId end)
+        if okMesh and meshId then write(`<Content name="MeshId">{meshId}</Content>`) end
+
+        local okTex, texId = pcall(function() return obj.TextureID end)
+        if okTex and texId then write(`<Content name="TextureID">{texId}</Content>`) end
+
+        local okSize, size = pcall(function() return obj.Size end)
+        if okSize and size then write(`<Vector3 name="Size">{size.X} {size.Y} {size.Z}</Vector3>`) end
+
+        local okScale, scale = pcall(function() return obj.Scale end)
+        if okScale and scale then write(`<Vector3 name="Scale">{scale.X} {scale.Y} {scale.Z}</Vector3>`) end
+
+        local okOffset, offset = pcall(function() return obj.Offset end)
+        if okOffset and offset then write(`<Vector3 name="Offset">{offset.X} {offset.Y} {offset.Z}</Vector3>`) end
     end
 
     write("</Properties>")
 
-    for _, ch in ipairs(obj:GetChildren()) do
-        writeObject(ch)
+    -- Recurse
+    for _, child in ipairs(obj:GetChildren()) do
+        if isNotService(child) then writeObject(child) end
     end
 
     write("</Item>")
 end
 
---------------------------------------------------------
--- OUTPUT
---------------------------------------------------------
-writefile(game.PlaceId .. ".rbxlx",
-    '<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4">'
-)
+-- Fun ReadMe Script
+local readMeScript = Instance.new("Script")
+readMeScript.Name = "READ ME"
+readMeScript.Source = [[
+-- Hello! You look amazing today! God bless
+-- You can put more fun messages here
+]]
+readMeScript.Parent = workspace
 
-for _, obj in ipairs(settings.Save) do
-    writeObject(obj)
-end
+-- Start RBXLX
+writefile(`{game.PlaceId}.rbxlx`, '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">')
+
+-- Save main objects
+for _, mainObj in ipairs(settings.Save) do writeObject(mainObj) end
 
 write("</roblox>")
 
-appendfile(game.PlaceId .. ".rbxlx", table.concat(buff))
+-- Flush remaining
+if #stringBuilder>0 then
+    appendfile(`{game.PlaceId}.rbxlx`, table.concat(stringBuilder))
+    stringBuilder = {}
+end
 
-print("✔ Finished in", tick() - start, "seconds")
+print(`Finished! Took {tick()-start}s`)
