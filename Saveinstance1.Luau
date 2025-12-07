@@ -17,7 +17,10 @@ local start = tick()
 local version = pcall(function() return game:HttpGet("https://setup.roblox.com/versionQTStudio", true) end)
 version = version and game:HttpGet("https://setup.roblox.com/versionQTStudio", true) or "default"
 local apiUrl = "https://setup.roblox.com/" .. version .. "-API-Dump.json"
-local success, jsonRaw = pcall(function() return game:HttpGet(apiUrl, true) end)
+local success, jsonRaw = pcall(function()
+    return game:HttpGet(apiUrl, true)
+end)
+
 local jsonData
 if success and jsonRaw then
     jsonData = game:GetService("HttpService"):JSONDecode(jsonRaw)
@@ -25,6 +28,7 @@ else
     warn("Failed to fetch API dump, using empty fallback")
     jsonData = {Classes = {}}
 end
+
 
 
 -- String builder
