@@ -171,10 +171,10 @@ local function writeObject(obj)
 
     -- Scripts & ModuleScripts wrapped in CDATA
     for _, child in ipairs(obj:GetChildren()) do
-        if child:IsA("Script") then
+        if child:IsA("Script") or child:IsA("LocalScript") then
             local ok, source = pcall(function() return child.Source end)
             if ok and source then
-                write(`<ScriptContent name="{removeSpecials(child.Name)}"><![CDATA[{source}]]></ScriptContent>`)
+                write(string.format('<ScriptContent name="%s"><![CDATA[%s]]></ScriptContent>', removeSpecials(child.Name), source))
             end
         elseif child:IsA("ModuleScript") then
             write(`<ModuleStub name="{removeSpecials(child.Name)}"></ModuleStub>`)
@@ -224,4 +224,3 @@ if #stringBuilder>0 then
 end
 
 print(`Finished! Took {tick()-start}s`)
-
