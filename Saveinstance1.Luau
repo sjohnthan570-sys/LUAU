@@ -3,7 +3,7 @@
     Fully crash-proof, silent, captures orphaned scripts,
     saves ModuleScript stubs, attributes, materials, CollectionService tags,
     properly handles MeshParts/SpecialMeshes/FileMeshes,
-    and guarantees well-formed XML for RBXLX.
+    and guarantees well-formed XML for RBXLX with correct Color3 values.
 --]]
 
 local settings = {
@@ -110,7 +110,11 @@ local specialCases = {
     Color3 = function(obj, prop)
         local ok,v = pcall(function() return obj[prop] end)
         if not ok or v==nil or typeof(v)~="Color3" then return "" end
-        return `<Color3 name="{prop}">{v.R} {v.G} {v.B}</Color3>`
+        -- convert to 0-255
+        local r = math.clamp(math.floor(v.R*255+0.5),0,255)
+        local g = math.clamp(math.floor(v.G*255+0.5),0,255)
+        local b = math.clamp(math.floor(v.B*255+0.5),0,255)
+        return `<Color3 name="{prop}">{r} {g} {b}</Color3>`
     end,
     CFrame = function(obj, prop)
         local ok,c = pcall(function()
@@ -169,12 +173,14 @@ local function writeObject(obj)
         write(`<Tag>{removeSpecials(tag)}</Tag>`)
     end
 
-    -- Scripts & ModuleScripts wrapped in CDATA
+    -- Scripts & ModuleScripts wrapped in CDATA safely
     for _, child in ipairs(obj:GetChildren()) do
-        if child:IsA("Script") or child:IsA("LocalScript") then
+        if child:IsA("Script") then
             local ok, source = pcall(function() return child.Source end)
             if ok and source then
-                write(string.format('<ScriptContent name="%s"><![CDATA[%s]]></ScriptContent>', removeSpecials(child.Name), source))
+                -- Escape "]]>" inside scripts to prevent breaking XML
+                source = source:gsub("]]>", "]]]]><![CDATA[>")
+                write(`<ScriptContent name="{removeSpecials(child.Name)}"><![CDATA[{source}]]></ScriptContent>`)
             end
         elseif child:IsA("ModuleScript") then
             write(`<ModuleStub name="{removeSpecials(child.Name)}"></ModuleStub>`)
