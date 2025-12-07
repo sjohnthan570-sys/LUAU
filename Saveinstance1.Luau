@@ -3,7 +3,7 @@
     Fully crash-proof, silent, captures orphaned scripts,
     saves ModuleScript stubs, attributes, materials, CollectionService tags,
     properly handles MeshParts/SpecialMeshes/FileMeshes,
-    and guarantees well-formed XML for RBXLX with correct Color3 values.
+    and guarantees well-formed XML for RBXLX, including BasePart colors.
 --]]
 
 local settings = {
@@ -110,11 +110,7 @@ local specialCases = {
     Color3 = function(obj, prop)
         local ok,v = pcall(function() return obj[prop] end)
         if not ok or v==nil or typeof(v)~="Color3" then return "" end
-        -- convert to 0-255
-        local r = math.clamp(math.floor(v.R*255+0.5),0,255)
-        local g = math.clamp(math.floor(v.G*255+0.5),0,255)
-        local b = math.clamp(math.floor(v.B*255+0.5),0,255)
-        return `<Color3 name="{prop}">{r} {g} {b}</Color3>`
+        return `<Color3 name="{prop}">{v.R} {v.G} {v.B}</Color3>`
     end,
     CFrame = function(obj, prop)
         local ok,c = pcall(function()
@@ -156,6 +152,18 @@ local function writeObject(obj)
         end
     end
 
+    -- Force BasePart colors
+    if obj:IsA("BasePart") then
+        local okC, c = pcall(function() return obj.Color end)
+        if okC and c then
+            write(`<Color3 name="Color">{c.R} {c.G} {c.B}</Color3>`)
+        end
+        local okB, b = pcall(function() return obj.BrickColor end)
+        if okB and b then
+            write(`<token name="BrickColor">{b.Name}</token>`)
+        end
+    end
+
     -- Material
     pcall(function() if obj.Material then write(`<Enum name="Material">{tostring(obj.Material)}</Enum>`) end end)
 
@@ -173,13 +181,11 @@ local function writeObject(obj)
         write(`<Tag>{removeSpecials(tag)}</Tag>`)
     end
 
-    -- Scripts & ModuleScripts wrapped in CDATA safely
+    -- Scripts & ModuleScripts wrapped in CDATA
     for _, child in ipairs(obj:GetChildren()) do
         if child:IsA("Script") then
             local ok, source = pcall(function() return child.Source end)
             if ok and source then
-                -- Escape "]]>" inside scripts to prevent breaking XML
-                source = source:gsub("]]>", "]]]]><![CDATA[>")
                 write(`<ScriptContent name="{removeSpecials(child.Name)}"><![CDATA[{source}]]></ScriptContent>`)
             end
         elseif child:IsA("ModuleScript") then
