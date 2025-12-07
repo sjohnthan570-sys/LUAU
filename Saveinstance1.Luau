@@ -13,23 +13,27 @@ local settings = {
 local b64encode = crypt and crypt.base64encode or function() return "" end
 local start = tick()
 
--- Fetch Roblox class dump
-local version = pcall(function() return game:HttpGet("https://setup.roblox.com/versionQTStudio", true) end)
-version = version and game:HttpGet("https://setup.roblox.com/versionQTStudio", true) or "default"
+-- Fetch Roblox class dump safely
+local okVersion, versionResult = pcall(function()
+    return game:HttpGet("https://setup.roblox.com/versionQTStudio", true)
+end)
+local version = (okVersion and versionResult) or "default"
+
 local apiUrl = "https://setup.roblox.com/" .. version .. "-API-Dump.json"
-local success, jsonRaw = pcall(function()
+
+local okJson, jsonRaw = pcall(function()
     return game:HttpGet(apiUrl, true)
 end)
 
 local jsonData
-if success and jsonRaw then
-    jsonData = game:GetService("HttpService"):JSONDecode(jsonRaw)
+if okJson and jsonRaw then
+    local okDecode, decoded = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(jsonRaw)
+    end)
+    jsonData = (okDecode and decoded) or {Classes={}}
 else
-    warn("Failed to fetch API dump, using empty fallback")
-    jsonData = {Classes = {}}
+    jsonData = {Classes={}}
 end
-
-
 
 -- String builder
 local sizeCounter = 0
