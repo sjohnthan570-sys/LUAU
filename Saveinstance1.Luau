@@ -121,49 +121,67 @@ end
 -- SPECIAL PROPERTY SERIALIZATION
 ---------------------------------------------------------------------
 local specialCases = {
+
     Vector3 = function(obj, prop)
         local ok, v = pcall(function() return obj[prop] end)
-        if ok and v then
-            return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
-        end
+        if not ok or v == nil then return "" end
+        if typeof(v) ~= "Vector3" then return "" end
+
+        return `<Vector3 name="{prop}">
+            <X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z>
+        </Vector3>`
     end,
 
     Vector2 = function(obj, prop)
         local ok, v = pcall(function() return obj[prop] end)
-        if ok and v then
-            return `<Vector2 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y></Vector2>`
-        end
+        if not ok or v == nil then return "" end
+        if typeof(v) ~= "Vector2" then return "" end
+
+        return `<Vector2 name="{prop}">
+            <X>{v.X}</X><Y>{v.Y}</Y>
+        </Vector2>`
     end,
 
     Color3 = function(obj, prop)
         local ok, v = pcall(function() return obj[prop] end)
-        if ok and v then
-            return `<Color3 name="{prop}"><R>{v.R}</R><G>{v.G}</G><B>{v.B}</B></Color3>`
-        end
+        if not ok or v == nil then return "" end
+        if typeof(v) ~= "Color3" then return "" end
+
+        return `<Color3 name="{prop}">
+            <R>{v.R}</R><G>{v.G}</G><B>{v.B}</B>
+        </Color3>`
     end,
 
     CFrame = function(obj, prop)
-        local ok, c = pcall(function() return { obj[prop]:GetComponents() } end)
-        if ok and c then
-            return `<CoordinateFrame name="{prop}">` ..
-            `<X>{c[1]}</X><Y>{c[2]}</Y><Z>{c[3]}</Z>` ..
-            `<R00>{c[4]}</R00><R01>{c[5]}</R01><R02>{c[6]}</R02>` ..
-            `<R10>{c[7]}</R10><R11>{c[8]}</R11><R12>{c[9]}</R12>` ..
-            `<R20>{c[10]}</R20><R21>{c[11]}</R21><R22>{c[12]}</R22>` ..
-            `</CoordinateFrame>`
-        end
+        local ok, c = pcall(function()
+            local cf = obj[prop]
+            if typeof(cf) ~= "CFrame" then return nil end
+            return { cf:GetComponents() }
+        end)
+
+        if not ok or c == nil then return "" end
+
+        return `<CoordinateFrame name="{prop}">
+            <X>{c[1]}</X><Y>{c[2]}</Y><Z>{c[3]}</Z>
+            <R00>{c[4]}</R00><R01>{c[5]}</R01><R02>{c[6]}</R02>
+            <R10>{c[7]}</R10><R11>{c[8]}</R11><R12>{c[9]}</R12>
+            <R20>{c[10]}</R20><R21>{c[11]}</R21><R22>{c[12]}</R22>
+        </CoordinateFrame>`
     end,
 
     InitialSize = function(obj)
         local ok, v = pcall(function()
             return gethiddenproperty and gethiddenproperty(obj, "InitialSize")
         end)
-        if ok and v then
-            return `<Vector3 name="InitialSize"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
-        end
+
+        if not ok or v == nil then return "" end
+        if typeof(v) ~= "Vector3" then return "" end
+
+        return `<Vector3 name="InitialSize">
+            <X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z>
+        </Vector3>`
     end
 }
-
 ---------------------------------------------------------------------
 -- ATTRIBUTE EXPORT
 ---------------------------------------------------------------------
@@ -225,52 +243,50 @@ end
 -- MAIN OBJECT WRITER
 ---------------------------------------------------------------------
 local function writeObject(obj)
-    progress()
+    write(`<Item class="{obj.ClassName}"><Properties><String name="Name">{removeSpecials(obj.Name)}</String>`)
 
-    write(`<Item class="{obj.ClassName}">`)
-    write("<Properties>")
+    local classInfo = objTable[obj.ClassName]
+    if classInfo then
+        for propName, propInfo in pairs(classInfo.Properties) do
 
-    write(`<String name="Name">{clean(obj.Name)}</String>`)
+            -- Safe property read
+            local ok, value = pcall(function()
+                return obj[propName]
+            end)
 
-    local props = objTable[obj.ClassName] and objTable[obj.ClassName].Properties
-    if props then
-        for propName, info in pairs(props) do
-            local ok, val = pcall(function() return obj[propName] end)
-            if ok and val ~= nil then
-                local typeName = info[1]
+            if not ok or value == nil then
+                continue
+            end
 
-                if specialCases[typeName] then
-                    local xml = specialCases[typeName](obj, propName)
-                    if xml then write(xml) end
+            -- Determine actual runtime type
+            local vtype = typeof(value)
+            local text = ""
 
-                elseif typeName == "Enum" then
-                    write(`<token name="{propName}">{val.Value}</token>`)
+            -- Runtime-based special case dispatch (safer than propInfo)
+            if specialCases[vtype] then
+                local out = specialCases[vtype](obj, propName, value)
+                if out and out ~= "" then
+                    write(out)
+                end
 
+            else
+                -- Normal write
+                if vtype == "EnumItem" then
+                    text = `<token name="{propName}">{value.Value}</token>`
                 else
-                    write(`<{typeName} name="{propName}">{clean(val)}</{typeName}>`)
+                    text = `<{propInfo[1]} name="{propName}">{value}</{propInfo[1]}>`
+                end
+
+                if text ~= "" then
+                    write(text)
                 end
             end
         end
     end
 
-    writeAttributes(obj)
-    writeTags(obj)
-
     write("</Properties>")
 
-    -- Script exporting
-    for _, child in ipairs(obj:GetChildren()) do
-        if child:IsA("Script") then
-            local ok, src = pcall(function() return child.Source end)
-            if ok and src and src ~= "" then
-                write(`<ScriptSource name="{clean(child.Name)}">{clean(src)}</ScriptSource>`)
-            end
-        elseif child:IsA("ModuleScript") then
-            write(`<ModuleStub name="{clean(child.Name)}"/>`)
-        end
-    end
-
-    -- Recurse into non-services
+    -- Children recursion (safe)
     for _, child in ipairs(obj:GetChildren()) do
         if not child.ClassName:match("Service$") then
             writeObject(child)
@@ -279,6 +295,7 @@ local function writeObject(obj)
 
     write("</Item>")
 end
+
 
 ---------------------------------------------------------------------
 -- BEGIN FILE
