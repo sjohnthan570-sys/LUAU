@@ -175,13 +175,6 @@ local specialCases = {
 }
 
 -- Detect orphan scripts (not in any major service)
-local function isNotService(obj)
-    return not obj:IsDescendantOf(workspace)
-       and not obj:IsDescendantOf(game:GetService("ReplicatedStorage"))
-       and not obj:IsDescendantOf(game:GetService("ServerStorage"))
-       and not obj:IsDescendantOf(game:GetService("Players"))
-       and not obj:IsDescendantOf(game:GetService("Lighting"))
-end
 
 -- Recursive function to write objects safely
 local function writeObject(obj)
