@@ -2,12 +2,12 @@
     Universal Safe SaveInstance Script
     Fully crash-proof, silent, captures orphaned scripts,
     saves ModuleScript stubs, attributes, materials, CollectionService tags,
-    handles MeshParts/SpecialMeshes/FileMeshes,
-    and exports BrickColor properly for every part.
+    properly handles MeshParts/SpecialMeshes/FileMeshes,
+    and guarantees well-formed XML for RBXLX.
 --]]
 
 local settings = {
-    TableSize = 10000,          -- Reduce if running out of memory
+    TableSize = 10000,          -- Adjust if memory issues
     Save = {workspace}          -- Objects to save
 }
 
@@ -95,7 +95,7 @@ if objTable["MeshPart"] then objTable["MeshPart"].Properties["InitialSize"] = {"
 print(`Initialized! Took {tick()-start}s`)
 start = tick()
 
--- Special cases
+-- Special cases for properties
 local specialCases = {
     Vector3 = function(obj, prop)
         local ok,v = pcall(function() return obj[prop] end)
@@ -111,6 +111,11 @@ local specialCases = {
         local ok,v = pcall(function() return obj[prop] end)
         if not ok or v==nil or typeof(v)~="Color3" then return "" end
         return `<Color3 name="{prop}">{v.R} {v.G} {v.B}</Color3>`
+    end,
+    BrickColor = function(obj, prop)
+        local ok,v = pcall(function() return obj[prop] end)
+        if not ok or v==nil or typeof(v)~="BrickColor" then return "" end
+        return `<BrickColor name="{prop}">{removeSpecials(v.Name)}</BrickColor>`
     end,
     CFrame = function(obj, prop)
         local ok,c = pcall(function()
@@ -141,6 +146,7 @@ local function writeObject(obj)
             if not ok or value==nil then continue end
 
             local output = ""
+            -- Check special cases first
             if typeName and specialCases[typeName] then
                 output = specialCases[typeName](obj, propName)
             elseif typeName=="Enum" and typeof(value)=="EnumItem" then
@@ -151,14 +157,6 @@ local function writeObject(obj)
             if output~="" then write(output) end
         end
     end
-
-    -- BrickColor fix
-    pcall(function()
-        if obj.BrickColor then
-            write(`<BrickColor name="BrickColor">{removeSpecials(tostring(obj.BrickColor))}</BrickColor>`)
-            write(`<Color3 name="Color">{obj.Color.R} {obj.Color.G} {obj.Color.B}</Color3>`)
-        end
-    end)
 
     -- Material
     pcall(function() if obj.Material then write(`<Enum name="Material">{tostring(obj.Material)}</Enum>`) end end)
