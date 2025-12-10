@@ -119,49 +119,39 @@ start = tick()
 -- Special cases
 local specialCases = {
     Vector3 = function(obj, prop)
-        local ok,v = pcall(function() return obj[prop] end)
+        local ok, v = pcall(function() return obj[prop] end)
         if not ok or typeof(v) ~= "Vector3" then return "" end
-        return string.format('<Vector3 name="%s">%f %f %f</Vector3>', prop, v.X, v.Y, v.Z)
+        return `<Vector3 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
     end,
 
     Vector2 = function(obj, prop)
-        local ok,v = pcall(function() return obj[prop] end)
+        local ok, v = pcall(function() return obj[prop] end)
         if not ok or typeof(v) ~= "Vector2" then return "" end
-        return string.format('<Vector2 name="%s">%f %f</Vector2>', prop, v.X, v.Y)
+        return `<Vector2 name="{prop}"><X>{v.X}</X><Y>{v.Y}</Y></Vector2>`
     end,
 
     Color3 = function(obj, prop)
-        local ok,v = pcall(function() return obj[prop] end)
+        local ok, v = pcall(function() return obj[prop] end)
         if not ok or typeof(v) ~= "Color3" then return "" end
-        return string.format('<Color3 name="%s">%f %f %f</Color3>', prop, v.R, v.G, v.B)
-    end,
-
-    BrickColor = function(obj, prop)
-        local ok,v = pcall(function() return obj[prop] end)
-        if not ok or typeof(v) ~= "BrickColor" then return "" end
-        return string.format('<BrickColor name="%s">%s</BrickColor>', prop, removeSpecials(v.Name))
+        return `<Color3 name="{prop}"><R>{v.R}</R><G>{v.G}</G><B>{v.B}</B></Color3>`
     end,
 
     CFrame = function(obj, prop)
         local ok, c = pcall(function()
             local cf = obj[prop]
             if typeof(cf) ~= "CFrame" then return nil end
-            return {cf:GetComponents()}
+            return { cf:GetComponents() }
         end)
         if not ok or not c then return "" end
-
-        return string.format(
-            '<CoordinateFrame name="%s">%f %f %f %f %f %f %f %f %f %f %f %f</CoordinateFrame>',
-            prop, unpack(c)
-        )
+        return `<CoordinateFrame name="{prop}"><X>{c[1]}</X><Y>{c[2]}</Y><Z>{c[3]}</Z><R00>{c[4]}</R00><R01>{c[5]}</R01><R02>{c[6]}</R02><R10>{c[7]}</R10><R11>{c[8]}</R11><R12>{c[9]}</R12><R20>{c[10]}</R20><R21>{c[11]}</R21><R22>{c[12]}</R22></CoordinateFrame>`
     end,
 
     InitialSize = function(obj)
-        local ok,v = pcall(function()
+        local ok, v = pcall(function()
             return gethiddenproperty and gethiddenproperty(obj, "InitialSize")
         end)
-        if not ok or not v then return "" end
-        return string.format('<Vector3 name="InitialSize">%f %f %f</Vector3>', v.X, v.Y, v.Z)
+        if not ok or typeof(v) ~= "Vector3" then return "" end
+        return `<Vector3 name="InitialSize"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
     end
 }
 
