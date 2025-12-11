@@ -109,7 +109,6 @@ for objName,objData in pairs(objTable) do
     objData.Properties = getAllProps(objName)
 end
 
--- Hidden InitialSize
 if objTable["UnionOperation"] then objTable["UnionOperation"].Properties["InitialSize"] = {"InitialSize"} end
 if objTable["MeshPart"] then objTable["MeshPart"].Properties["InitialSize"] = {"InitialSize"} end
 
@@ -152,6 +151,31 @@ local specialCases = {
         end)
         if not ok or typeof(v) ~= "Vector3" then return "" end
         return `<Vector3 name="InitialSize"><X>{v.X}</X><Y>{v.Y}</Y><Z>{v.Z}</Z></Vector3>`
+    end,
+
+    -- 🔥 FULL MESH PART HANDLING ADDED HERE
+    MeshPart = function(obj, prop)
+        local ok, val = pcall(function() return obj[prop] end)
+        if not ok or val == nil then return "" end
+
+        if prop == "MeshId" or prop == "TextureID" then
+            if val == "" then return "" end
+            return `<Content name="{prop}">{val}</Content>`
+        end
+
+        if prop == "VertexColor" and typeof(val) == "Vector3" then
+            return `<Vector3 name="VertexColor"><X>{val.X}</X><Y>{val.Y}</Y><Z>{val.Z}</Z></Vector3>`
+        end
+
+        if prop == "RenderFidelity" or prop == "CollisionFidelity" then
+            return `<Token name="{prop}">{tostring(val)}</Token>`
+        end
+
+        if prop == "DoubleSided" and typeof(val) == "boolean" then
+            return `<Bool name="DoubleSided">{val}</Bool>`
+        end
+
+        return ""
     end
 }
 
@@ -169,12 +193,25 @@ local function writeObject(obj)
 
             local out = ""
 
+            -- 🔥 MESH PART OVERRIDE HANDLED HERE
+            if obj.ClassName == "MeshPart" then
+                local meshOut = specialCases.MeshPart(obj, propName)
+                if meshOut ~= "" then
+                    write(meshOut)
+                    continue
+                end
+            end
+
             if specialCases[typeName] then
                 out = specialCases[typeName](obj, propName)
             elseif typeName == "Enum" and typeof(value) == "EnumItem" then
                 out = string.format('<token name="%s">%d</token>', propName, value.Value)
             else
-                out = string.format('<%s name="%s">%s</%s>', typeName, propName, removeSpecials(tostring(value)), typeName)
+                out = string.format('<%s name="%s">%s</%s>',
+                    typeName, propName,
+                    removeSpecials(tostring(value)),
+                    typeName
+                )
             end
 
             if out ~= "" then write(out) end
@@ -190,7 +227,9 @@ local function writeObject(obj)
 
     -- Attributes
     for _, att in ipairs(obj:GetAttributes()) do
-        write(string.format('<Attribute name="%s">%s</Attribute>', att, removeSpecials(tostring(obj:GetAttribute(att)))))
+        write(string.format('<Attribute name="%s">%s</Attribute>',
+            att, removeSpecials(tostring(obj:GetAttribute(att)))
+        ))
     end
 
     -- CollectionService tags
@@ -210,51 +249,22 @@ local function writeObject(obj)
             if ok and src then
                 write(string.format(
                     '<ScriptContent name="%s"><![CDATA[%s]]></ScriptContent>',
-                    removeSpecials(child.Name),
-                    src
+                    removeSpecials(child.Name), src
                 ))
             end
         elseif child:IsA("ModuleScript") then
-            write(string.format('<ModuleStub name="%s"></ModuleStub>', removeSpecials(child.Name)))
+            write(string.format('<ModuleStub name="%s"></ModuleStub>',
+                removeSpecials(child.Name)))
         end
     end
 
-    ----------------------------------------------------------------
-    -- MESH FIX INSERTED HERE (final version)
-    ----------------------------------------------------------------
-    if obj:IsA("MeshPart") then
-        pcall(function()
-            local meshId = obj.MeshId
-            if meshId and meshId ~= "" then
-                write(string.format('<Content name="MeshId">%s</Content>', removeSpecials(meshId)))
-            end
-
-            local textureId = obj.TextureID or obj.TextureId
-            if textureId and textureId ~= "" then
-                write(string.format('<Content name="TextureID">%s</Content>', removeSpecials(textureId)))
-            end
-        end)
-    end
-
+    -- FileMesh + SpecialMesh fallback
     if obj:IsA("SpecialMesh") or obj:IsA("FileMesh") then
         pcall(function()
-            if obj.MeshId and obj.MeshId ~= "" then
-                write(string.format('<Content name="MeshId">%s</Content>', removeSpecials(obj.MeshId)))
-            end
-
-            local tid = obj.TextureId or obj.TextureID
-            if tid and tid ~= "" then
-                write(string.format('<Content name="TextureID">%s</Content>', removeSpecials(tid)))
-            end
-
-            local scale = obj.Scale or Vector3.new(1,1,1)
-            write(string.format('<Vector3 name="Scale"><X>%s</X><Y>%s</Y><Z>%s</Z></Vector3>', scale.X, scale.Y, scale.Z))
-
-            local offset = obj.Offset or Vector3.new()
-            write(string.format('<Vector3 name="Offset"><X>%s</X><Y>%s</Y><Z>%s</Z></Vector3>', offset.X, offset.Y, offset.Z))
+            if obj.MeshId then write(`<Content name="MeshId">{obj.MeshId}</Content>`) end
+            if obj.TextureID then write(`<Content name="TextureID">{obj.TextureID}</Content>`) end
         end)
     end
-    ----------------------------------------------------------------
 
     write("</Properties>")
 
@@ -265,7 +275,6 @@ local function writeObject(obj)
     write("</Item>")
 end
 
--- Fun READ ME script
 local readMeScript = Instance.new("Script")
 readMeScript.Name = "READ ME"
 readMeScript.Source = [[
