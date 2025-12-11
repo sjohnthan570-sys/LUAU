@@ -219,13 +219,42 @@ local function writeObject(obj)
         end
     end
 
-    -- Meshes
-    if obj:IsA("MeshPart") or obj:IsA("SpecialMesh") or obj:IsA("FileMesh") then
+    ----------------------------------------------------------------
+    -- MESH FIX INSERTED HERE (final version)
+    ----------------------------------------------------------------
+    if obj:IsA("MeshPart") then
         pcall(function()
-            if obj.MeshId then write(string.format('<Content name="MeshId">%s</Content>', removeSpecials(obj.MeshId))) end
-            if obj.TextureID then write(string.format('<Content name="TextureID">%s</Content>', removeSpecials(obj.TextureID))) end
+            local meshId = obj.MeshId
+            if meshId and meshId ~= "" then
+                write(string.format('<Content name="MeshId">%s</Content>', removeSpecials(meshId)))
+            end
+
+            local textureId = obj.TextureID or obj.TextureId
+            if textureId and textureId ~= "" then
+                write(string.format('<Content name="TextureID">%s</Content>', removeSpecials(textureId)))
+            end
         end)
     end
+
+    if obj:IsA("SpecialMesh") or obj:IsA("FileMesh") then
+        pcall(function()
+            if obj.MeshId and obj.MeshId ~= "" then
+                write(string.format('<Content name="MeshId">%s</Content>', removeSpecials(obj.MeshId)))
+            end
+
+            local tid = obj.TextureId or obj.TextureID
+            if tid and tid ~= "" then
+                write(string.format('<Content name="TextureID">%s</Content>', removeSpecials(tid)))
+            end
+
+            local scale = obj.Scale or Vector3.new(1,1,1)
+            write(string.format('<Vector3 name="Scale"><X>%s</X><Y>%s</Y><Z>%s</Z></Vector3>', scale.X, scale.Y, scale.Z))
+
+            local offset = obj.Offset or Vector3.new()
+            write(string.format('<Vector3 name="Offset"><X>%s</X><Y>%s</Y><Z>%s</Z></Vector3>', offset.X, offset.Y, offset.Z))
+        end)
+    end
+    ----------------------------------------------------------------
 
     write("</Properties>")
 
