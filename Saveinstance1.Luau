@@ -301,3 +301,6 @@ if #stringBuilder > 0 then
 end
 
 print(string.format("Finished! Took %fs", tick() - start))
+
+
+print(string.format("Finished! Took %fs", tick() - start))
