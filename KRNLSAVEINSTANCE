@@ -153,41 +153,79 @@ function SaveInstance.CacheScripts(parent)
 end
 
 -- =========================
--- UNION → MESHPART CONVERSION + SIZE FIXES
+-- =========================
+-- UNION → SPECIALMESH / MESHPART CONVERSION
 -- =========================
 
--- Converts UnionOperation into MeshPart placeholders with correct size/CFrame
 local function ConvertUnion(union)
-    local mesh = Instance.new("MeshPart")
-    mesh.Name = union.Name
+    -- Decide compatibility mode
+    local useSpecialMesh = true
 
-    -- Preserve transform
-    mesh.CFrame = union.CFrame
-    mesh.Size = union.Size
-    mesh.Anchored = union.Anchored
-    mesh.CanCollide = union.CanCollide
-    mesh.CanQuery = union.CanQuery
-    mesh.CanTouch = union.CanTouch
-    mesh.Transparency = union.Transparency
-    mesh.Material = union.Material
-    mesh.Color = union.Color
-    mesh.Reflectance = union.Reflectance
-    mesh.CastShadow = union.CastShadow
+    local container
+    if useSpecialMesh then
+        container = Instance.new("Part")
+        container.Name = union.Name
+        container.Size = union.Size
+        container.CFrame = union.CFrame
+        container.Anchored = union.Anchored
+        container.CanCollide = union.CanCollide
+        container.CanQuery = union.CanQuery
+        container.CanTouch = union.CanTouch
+        container.Transparency = union.Transparency
+        container.Material = union.Material
+        container.Color = union.Color
+        container.Reflectance = union.Reflectance
+        container.CastShadow = union.CastShadow
 
-    -- Union asset fallback
-    local ok, assetId = pcall(function()
-        return union.AssetId
-    end)
-    if ok and assetId and assetId ~= "" then
-        mesh.MeshId = assetId
+        local mesh = Instance.new("SpecialMesh")
+        mesh.MeshType = Enum.MeshType.FileMesh
+        mesh.Scale = Vector3.new(1,1,1)
+        mesh.Offset = Vector3.zero
+
+        local ok, assetId = pcall(function()
+            return union.AssetId
+        end)
+        if ok and assetId and assetId ~= "" then
+            mesh.MeshId = assetId
+        end
+
+        mesh.Parent = container
+    else
+        container = Instance.new("MeshPart")
+        container.Name = union.Name
+        container.Size = union.Size
+        container.CFrame = union.CFrame
+        container.Anchored = union.Anchored
+        container.CanCollide = union.CanCollide
+        container.CanQuery = union.CanQuery
+        container.CanTouch = union.CanTouch
+        container.Transparency = union.Transparency
+        container.Material = union.Material
+        container.Color = union.Color
+        container.Reflectance = union.Reflectance
+        container.CastShadow = union.CastShadow
+
+        local ok, assetId = pcall(function()
+            return union.AssetId
+        end)
+        if ok and assetId and assetId ~= "" then
+            container.MeshId = assetId
+        end
     end
 
-    -- Copy surface properties
+    -- Surface + texture remap
     for _, face in ipairs(Enum.NormalId:GetEnumItems()) do
-        mesh[face.Name .. "Surface"] = union[face.Name .. "Surface"]
+        pcall(function()
+            container[face.Name .. "Surface"] = union[face.Name .. "Surface"]
+        end)
     end
 
-    return mesh
+    -- Collision fidelity
+    pcall(function()
+        container.CollisionGroup = union.CollisionGroup
+    end)
+
+    return container
 end
 
 -- =========================
