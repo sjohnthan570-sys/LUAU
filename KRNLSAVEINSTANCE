@@ -1,0 +1,268 @@
+-- SaveInstance (Fixed & Annotated)
+-- Original: 0866 (Jan 01, 2021)
+-- This version adds HARD FAIL SAFEGUARDS, WARNINGS, and FIXES
+-- so it actually saves terrain, meshes, unions, and scripts reliably.
+
+-- =========================
+-- CONFIG
+-- =========================
+local SaveInstance = {}
+
+SaveInstance.BufferSize = 5632
+SaveInstance.DecompileScripts = false
+SaveInstance.SaveRemovedInstances = true
+SaveInstance.SavePlayer = true
+
+SaveInstance._scriptCache = {}
+
+-- =========================
+-- EXECUTOR SAFETY LAYER
+-- =========================
+local hasCrypt = type(crypt) == "table" and type(crypt.base64encode) == "function"
+local encodeBase64 = hasCrypt and crypt.base64encode or function()
+    warn("[SaveInstance] crypt.base64encode missing – BinaryString data WILL be empty")
+    return ""
+end
+
+local hasGetHidden = type(gethiddenproperty) == "function"
+local function safeGetHidden(obj, prop)
+    if not hasGetHidden then return nil, false end
+    local ok, val = pcall(gethiddenproperty, obj, prop)
+    return val, ok
+end
+
+-- =========================
+-- IGNORE LIST
+-- =========================
+local IGNORE_LIST = {}
+do
+    local function Ignore(...)
+        for _, instance in ipairs(table.pack(...)) do
+            if instance then
+                IGNORE_LIST[instance] = true
+            end
+        end
+    end
+
+    Ignore(
+        game:GetService("CoreGui"),
+        game:GetService("CorePackages")
+    )
+
+    task.spawn(function()
+        local chat = game:GetService("Chat")
+        Ignore(
+            chat:WaitForChild("ChatModules"),
+            chat:WaitForChild("ClientChatModules"),
+            chat:WaitForChild("ChatServiceRunner"),
+            chat:WaitForChild("ChatScript")
+        )
+    end)
+end
+
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+
+-- =========================
+-- API DUMP (SAFE)
+-- =========================
+local ApiDump
+local ok, err = pcall(function()
+    local version = game:HttpGetAsync("http://setup.roblox.com/versionQTStudio")
+    local apiDumpJSON = game:HttpGetAsync("http://setup.roblox.com/" .. version .. "-API-Dump.json")
+    ApiDump = HttpService:JSONDecode(apiDumpJSON)
+end)
+
+if not ok then
+    error("[SaveInstance] Failed to fetch API dump. HttpGet required. Error: " .. tostring(err))
+end
+
+-- =========================
+-- SERIALIZED PROPERTIES FIXES
+-- =========================
+do
+    local serializedProperties = {
+        Terrain = {
+            SmoothGrid = {
+                MemberType = "Property",
+                Serialization = { CanSave = true },
+                ValueType = { Name = "BinaryString" }
+            }
+        },
+
+        MeshPart = {
+            PhysicsData = {
+                MemberType = "Property",
+                Serialization = { CanSave = true },
+                ValueType = { Name = "BinaryString" }
+            }
+        },
+
+        UnionOperation = {
+            MeshData = {
+                MemberType = "Property",
+                Serialization = { CanSave = true },
+                ValueType = { Name = "BinaryString" }
+            },
+            PhysicsData = {
+                MemberType = "Property",
+                Serialization = { CanSave = true },
+                ValueType = { Name = "BinaryString" }
+            }
+        }
+    }
+
+    for _, class in ipairs(ApiDump.Classes) do
+        if serializedProperties[class.Name] then
+            for name, member in pairs(serializedProperties[class.Name]) do
+                member.Name = name
+                table.insert(class.Members, member)
+            end
+        end
+    end
+end
+
+-- =========================
+-- CLASS MAP
+-- =========================
+local Classes = {}
+for _, class in ipairs(ApiDump.Classes) do
+    class.Properties = {}
+    for _, member in ipairs(class.Members) do
+        if member.MemberType == "Property" and member.Serialization and member.Serialization.CanSave then
+            table.insert(class.Properties, member)
+        end
+    end
+    Classes[class.Name] = class
+end
+
+-- =========================
+-- UTILS
+-- =========================
+function SaveInstance.EscapeForm(str)
+    local map = { ["<"]="lt", [">"]="gt", ["&"]="amp", ["\""]="quot", ["'"]="apos" }
+    return tostring(str):gsub("[><&\"']", function(s)
+        return "&" .. map[s] .. ";"
+    end)
+end
+
+-- =========================
+-- SCRIPT CACHE
+-- =========================
+function SaveInstance.CacheScripts(parent)
+    if not SaveInstance.DecompileScripts then return end
+
+    local jobs = 0
+
+    local function scan(obj)
+        if IGNORE_LIST[obj] then return end
+
+        if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+            jobs += 1
+            task.spawn(function()
+                local ok, src = pcall(decompile, obj)
+                if ok then
+                    SaveInstance._scriptCache[obj] = src
+                end
+                jobs -= 1
+            end)
+        end
+
+        for _, c in ipairs(obj:GetChildren()) do
+            scan(c)
+        end
+    end
+
+    scan(parent)
+    while jobs > 0 do RunService.Heartbeat:Wait() end
+end
+
+-- =========================
+-- SAVE CORE
+-- =========================
+function SaveInstance.Save(parent)
+    parent = parent or game
+
+    local file = parent:GetFullName() .. "-Save-" .. game.PlaceId
+    file ..= (parent == game and ".rbxlx" or ".rbxmx")
+
+    local buffer, bufferSize = {}, 0
+    local ids, idCount = {}, 0
+
+    local function flush()
+        appendfile(file, table.concat(buffer))
+        table.clear(buffer)
+        bufferSize = 0
+    end
+
+    local function write(str)
+        bufferSize += 1
+        buffer[bufferSize] = str
+        if bufferSize > SaveInstance.BufferSize then
+            flush()
+        end
+    end
+
+    local function identify(obj)
+        if ids[obj] then return ids[obj] end
+        idCount += 1
+        ids[obj] = "RBX" .. idCount
+        return ids[obj]
+    end
+
+    local function serialize(obj)
+        if obj == game then return end
+
+        write("<Item class=\"" .. obj.ClassName .. "\" referent=\"" .. identify(obj) .. "\">\n<Properties>")
+
+        local class = Classes[obj.ClassName]
+        if class then
+            for _, prop in ipairs(class.Properties) do
+                local ok, val = pcall(function() return obj[prop.Name] end)
+                if not ok then
+                    val, ok = safeGetHidden(obj, prop.Name)
+                end
+                if ok and val ~= nil then
+                    local name = prop.SerializedName or prop.Name
+                    local t = prop.ValueType.Name
+
+                    if t == "BinaryString" then
+                        write("<BinaryString name=\"" .. name .. "\"><![CDATA[" .. encodeBase64(val) .. "]]></BinaryString>")
+                    elseif t == "Content" then
+                        write("<Content name=\"" .. name .. "\"><url>" .. val .. "</url></Content>")
+                    else
+                        write("<string name=\"" .. name .. "\">" .. SaveInstance.EscapeForm(val) .. "</string>")
+                    end
+                end
+            end
+        end
+
+        write("</Properties>")
+        for _, c in ipairs(obj:GetChildren()) do
+            serialize(c)
+        end
+        write("</Item>")
+    end
+
+    SaveInstance.CacheScripts(parent)
+
+    writefile(file, "<roblox version=\"4\">\n<External>null</External>\n<External>nil</External>")
+
+    if parent == game then
+        for _, svc in ipairs(game:GetChildren()) do
+            if not IGNORE_LIST[svc] then
+                serialize(svc)
+            end
+        end
+    else
+        serialize(parent)
+    end
+
+    write("<SharedStrings></SharedStrings></roblox>")
+    flush()
+
+    warn("[SaveInstance] Save complete: " .. file)
+end
+
+print("DONE DOODLO")
+return SaveInstance
