@@ -1,11 +1,8 @@
--- SaveInstance (Fixed & Annotated)
--- Original: 0866 (Jan 01, 2021)
--- This version adds HARD FAIL SAFEGUARDS, WARNINGS, and FIXES
--- so it actually saves terrain, meshes, unions, and scripts reliably.
+-- SaveInstance
+-- 0866 (Modernized & Crash-Fixed)
+-- Full script, guarded for modern Roblox BinaryString behavior
+-- This version WILL run, warn, and continue instead of crashing
 
--- =========================
--- CONFIG
--- =========================
 local SaveInstance = {}
 
 SaveInstance.BufferSize = 5632
@@ -16,12 +13,17 @@ SaveInstance.SavePlayer = true
 SaveInstance._scriptCache = {}
 
 -- =========================
--- EXECUTOR SAFETY LAYER
+-- EXECUTOR SAFETY
 -- =========================
 local hasCrypt = type(crypt) == "table" and type(crypt.base64encode) == "function"
-local encodeBase64 = hasCrypt and crypt.base64encode or function()
-    warn("[SaveInstance] crypt.base64encode missing – BinaryString data WILL be empty")
-    return ""
+local function encodeBase64Safe(v)
+    if type(v) ~= "string" then
+        return nil, "not a string"
+    end
+    if not hasCrypt then
+        return nil, "crypt.base64encode missing"
+    end
+    return crypt.base64encode(v)
 end
 
 local hasGetHidden = type(gethiddenproperty) == "function"
@@ -37,10 +39,8 @@ end
 local IGNORE_LIST = {}
 do
     local function Ignore(...)
-        for _, instance in ipairs(table.pack(...)) do
-            if instance then
-                IGNORE_LIST[instance] = true
-            end
+        for _, inst in ipairs(table.pack(...)) do
+            if inst then IGNORE_LIST[inst] = true end
         end
     end
 
@@ -64,7 +64,7 @@ local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 
 -- =========================
--- API DUMP (SAFE)
+-- API DUMP (REQUIRED)
 -- =========================
 local ApiDump
 local ok, err = pcall(function()
@@ -74,47 +74,29 @@ local ok, err = pcall(function()
 end)
 
 if not ok then
-    error("[SaveInstance] Failed to fetch API dump. HttpGet required. Error: " .. tostring(err))
+    error("[SaveInstance] API dump fetch failed: " .. tostring(err))
 end
 
 -- =========================
--- SERIALIZED PROPERTIES FIXES
+-- ADD SERIALIZED PROPERTIES
 -- =========================
 do
-    local serializedProperties = {
+    local extra = {
         Terrain = {
-            SmoothGrid = {
-                MemberType = "Property",
-                Serialization = { CanSave = true },
-                ValueType = { Name = "BinaryString" }
-            }
+            SmoothGrid = { MemberType="Property", Serialization={CanSave=true}, ValueType={Name="BinaryString"} }
         },
-
         MeshPart = {
-            PhysicsData = {
-                MemberType = "Property",
-                Serialization = { CanSave = true },
-                ValueType = { Name = "BinaryString" }
-            }
+            PhysicsData = { MemberType="Property", Serialization={CanSave=true}, ValueType={Name="BinaryString"} }
         },
-
         UnionOperation = {
-            MeshData = {
-                MemberType = "Property",
-                Serialization = { CanSave = true },
-                ValueType = { Name = "BinaryString" }
-            },
-            PhysicsData = {
-                MemberType = "Property",
-                Serialization = { CanSave = true },
-                ValueType = { Name = "BinaryString" }
-            }
+            MeshData = { MemberType="Property", Serialization={CanSave=true}, ValueType={Name="BinaryString"} },
+            PhysicsData = { MemberType="Property", Serialization={CanSave=true}, ValueType={Name="BinaryString"} }
         }
     }
 
     for _, class in ipairs(ApiDump.Classes) do
-        if serializedProperties[class.Name] then
-            for name, member in pairs(serializedProperties[class.Name]) do
+        if extra[class.Name] then
+            for name, member in pairs(extra[class.Name]) do
                 member.Name = name
                 table.insert(class.Members, member)
             end
@@ -151,26 +133,19 @@ end
 -- =========================
 function SaveInstance.CacheScripts(parent)
     if not SaveInstance.DecompileScripts then return end
-
     local jobs = 0
 
     local function scan(obj)
         if IGNORE_LIST[obj] then return end
-
         if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
             jobs += 1
             task.spawn(function()
                 local ok, src = pcall(decompile, obj)
-                if ok then
-                    SaveInstance._scriptCache[obj] = src
-                end
+                if ok then SaveInstance._scriptCache[obj] = src end
                 jobs -= 1
             end)
         end
-
-        for _, c in ipairs(obj:GetChildren()) do
-            scan(c)
-        end
+        for _, c in ipairs(obj:GetChildren()) do scan(c) end
     end
 
     scan(parent)
@@ -195,12 +170,10 @@ function SaveInstance.Save(parent)
         bufferSize = 0
     end
 
-    local function write(str)
+    local function write(s)
         bufferSize += 1
-        buffer[bufferSize] = str
-        if bufferSize > SaveInstance.BufferSize then
-            flush()
-        end
+        buffer[bufferSize] = s
+        if bufferSize > SaveInstance.BufferSize then flush() end
     end
 
     local function identify(obj)
@@ -219,17 +192,26 @@ function SaveInstance.Save(parent)
         if class then
             for _, prop in ipairs(class.Properties) do
                 local ok, val = pcall(function() return obj[prop.Name] end)
-                if not ok then
-                    val, ok = safeGetHidden(obj, prop.Name)
-                end
+                if not ok then val, ok = safeGetHidden(obj, prop.Name) end
                 if ok and val ~= nil then
                     local name = prop.SerializedName or prop.Name
                     local t = prop.ValueType.Name
 
                     if t == "BinaryString" then
-                        write("<BinaryString name=\"" .. name .. "\"><![CDATA[" .. encodeBase64(val) .. "]]></BinaryString>")
+                        local enc, reason = encodeBase64Safe(val)
+                        if enc then
+                            write("<BinaryString name=\"" .. name .. "\"><![CDATA[" .. enc .. "]]></BinaryString>")
+                        else
+                            warn("[SaveInstance] Skipped BinaryString:", obj:GetFullName(), name, reason)
+                        end
+
                     elseif t == "Content" then
-                        write("<Content name=\"" .. name .. "\"><url>" .. val .. "</url></Content>")
+                        write("<Content name=\"" .. name .. "\"><url>" .. tostring(val) .. "</url></Content>")
+
+                    elseif t == "ProtectedString" then
+                        local src = SaveInstance._scriptCache[obj] or val
+                        write("<ProtectedString name=\"" .. name .. "\"><![CDATA[" .. src .. "]]></ProtectedString>")
+
                     else
                         write("<string name=\"" .. name .. "\">" .. SaveInstance.EscapeForm(val) .. "</string>")
                     end
@@ -238,9 +220,7 @@ function SaveInstance.Save(parent)
         end
 
         write("</Properties>")
-        for _, c in ipairs(obj:GetChildren()) do
-            serialize(c)
-        end
+        for _, c in ipairs(obj:GetChildren()) do serialize(c) end
         write("</Item>")
     end
 
@@ -250,9 +230,7 @@ function SaveInstance.Save(parent)
 
     if parent == game then
         for _, svc in ipairs(game:GetChildren()) do
-            if not IGNORE_LIST[svc] then
-                serialize(svc)
-            end
+            if not IGNORE_LIST[svc] then serialize(svc) end
         end
     else
         serialize(parent)
@@ -264,5 +242,4 @@ function SaveInstance.Save(parent)
     warn("[SaveInstance] Save complete: " .. file)
 end
 
-print("DONE DOODLO")
 return SaveInstance
