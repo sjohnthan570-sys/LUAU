@@ -1,19 +1,18 @@
--- SaveInstance Fixed Version
--- Handles PhysicsData, MeshParts, and Union→MeshPart conversion safely
-
+-- SaveInstance Fixed for Union → MeshPart Conversion
 local SaveInstance = {}
 
 SaveInstance.BufferSize = 5632
 SaveInstance.DecompileScripts = false
 SaveInstance.SaveRemovedInstances = true
 SaveInstance.SavePlayer = true
-
 SaveInstance._scriptCache = {}
 
-local encodeBase64 = crypt and crypt.base64encode or function() return "" end
-local gethiddenproperty = gethiddenproperty or function(_, prop) return nil end
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 
-local IGNORE_LIST = {} do
+-- Ignore Core services
+local IGNORE_LIST = {}
+do
     local function Ignore(...)
         for _,instance in ipairs(table.pack(...)) do
             if instance then
@@ -22,67 +21,25 @@ local IGNORE_LIST = {} do
         end
     end
 
-    Ignore(
-        game:GetService("CoreGui"),
-        game:GetService("CorePackages"),
-        game:GetService("Players")
-    )
+    Ignore(game:GetService("CoreGui"), game:GetService("CorePackages"), game:GetService("Players"))
 
     coroutine.wrap(function()
         local chat = game:GetService("Chat")
-        Ignore(
-            chat:WaitForChild("ChatModules"),
-            chat:WaitForChild("ClientChatModules"),
-            chat:WaitForChild("ChatServiceRunner"),
-            chat:WaitForChild("ChatScript")
-        )
+        Ignore(chat:WaitForChild("ChatModules"),
+               chat:WaitForChild("ClientChatModules"),
+               chat:WaitForChild("ChatServiceRunner"),
+               chat:WaitForChild("ChatScript"))
     end)()
 end
 
-local HttpService = game:GetService("HttpService")
-local RunService = game:GetService("RunService")
-
--- Load API Dump
-local ApiDump do
-    local success, version = pcall(function()
-        return game:HttpGetAsync("http://setup.roblox.com/versionQTStudio")
-    end)
-    if not success then version = "latest" end
-    local ok, apiDumpJSON = pcall(function()
-        return game:HttpGetAsync("http://setup.roblox.com/" .. version .. "-API-Dump.json")
-    end)
-    ApiDump = ok and HttpService:JSONDecode(apiDumpJSON) or {Classes={}}
-end
-
--- Build Classes dictionary
-local Classes = {}
-do
-    for _,class in ipairs(ApiDump.Classes or {}) do
-        class.Properties = {}
-        for _,member in ipairs(class.Members or {}) do
-            if member.MemberType == "Property" and member.Serialization and member.Serialization.CanSave then
-                table.insert(class.Properties, member)
-            end
-        end
-        Classes[class.Name] = class
-    end
-end
-
--- Escape XML
-function SaveInstance.EscapeForm(str)
-    local entityMap = { ["<"]="lt", [">"]="gt", ["&"]="amp", ["\""]="quot", ["'"]="apos" }
-    return tostring(str):gsub("[><&\"']", function(s)
-        return ("&" .. entityMap[s] .. ";")
-    end)
-end
-
--- Cache scripts
+-- Cache scripts if requested
 function SaveInstance.CacheScripts(parent)
     if not SaveInstance.DecompileScripts then return end
     local jobCount = 0
 
     local function Cache(instance)
         if IGNORE_LIST[instance] then return end
+
         if instance:IsA("LocalScript") or instance:IsA("ModuleScript") then
             jobCount += 1
             spawn(function()
@@ -93,128 +50,104 @@ function SaveInstance.CacheScripts(parent)
                 jobCount -= 1
             end)
         end
+
         for _,child in ipairs(instance:GetChildren()) do
             Cache(child)
         end
     end
 
     Cache(parent)
-    while jobCount > 0 do RunService.Heartbeat:Wait() end
-end
-
--- Identify instances
-local function Identify(instance, instanceIds, instanceCount)
-    if instanceIds[instance] then return instanceIds[instance], instanceCount end
-    instanceCount += 1
-    instanceIds[instance] = "RBX" .. instanceCount
-    return "RBX" .. instanceCount, instanceCount
-end
-
--- Safe property serializer
-local function SerializeProperty(instance, property, buffer)
-    local name = property.SerializedName or property.Name
-    local success, value = pcall(function() return instance[property.Name] end)
-    if not success then
-        success, value = pcall(gethiddenproperty, instance, property.Name)
-        if not success then return end
-    end
-
-    local propType = property.ValueType.Name
-    local propCat = property.ValueType.Category
-
-    -- Handle Enum safely
-    if propCat == "Enum" and type(value) == "table" and value.Value then
-        table.insert(buffer, string.format("<token name=\"%s\">%s</token>", name, tostring(value.Value)))
-        return
-    end
-
-    -- Handle CFrame, Vector3, Vector2, Color3, UDim, UDim2, Rect, Content, BinaryString
-    if propType == "CFrame" then
-        local x,y,z,r00,r01,r02,r10,r11,r12,r20,r21,r22 = value:GetComponents()
-        table.insert(buffer, string.format(
-            "<CoordinateFrame name=\"%s\">\n<X>%s</X>\n<Y>%s</Y>\n<Z>%s</Z>\n<R00>%s</R00>\n<R01>%s</R01>\n<R02>%s</R02>\n<R10>%s</R10>\n<R11>%s</R11>\n<R12>%s</R12>\n<R20>%s</R20>\n<R21>%s</R21>\n<R22>%s</R22>\n</CoordinateFrame>",
-            name, x,y,z,r00,r01,r02,r10,r11,r12,r20,r21,r22
-        ))
-    elseif propType == "Vector3" then
-        table.insert(buffer, string.format("<Vector3 name=\"%s\">\n<X>%s</X>\n<Y>%s</Y>\n<Z>%s</Z>\n</Vector3>", name, value.X,value.Y,value.Z))
-    elseif propType == "Vector2" then
-        table.insert(buffer, string.format("<Vector2 name=\"%s\">\n<X>%s</X>\n<Y>%s</Y>\n</Vector2>", name, value.X,value.Y))
-    elseif propType == "Color3" then
-        table.insert(buffer, string.format("<Color3 name=\"%s\">\n<R>%s</R>\n<G>%s</G>\n<B>%s</B>\n</Color3>", name, value.R,value.G,value.B))
-    elseif propType == "UDim" then
-        table.insert(buffer, string.format("<UDim name=\"%s\">\n<S>%s</S>\n<O>%s</O>\n</UDim>", name, value.Scale,value.Offset))
-    elseif propType == "UDim2" then
-        table.insert(buffer, string.format("<UDim2 name=\"%s\">\n<XS>%s</XS>\n<XO>%s</XO>\n<YS>%s</YS>\n<YO>%s</YO>\n</UDim2>", name, value.X.Scale,value.X.Offset,value.Y.Scale,value.Y.Offset))
-    elseif propType == "Rect" then
-        table.insert(buffer, string.format("<Rect name=\"%s\">\n<min>\n<X>%s</X>\n<Y>%s</Y>\n</min>\n<max>\n<X>%s</X>\n<Y>%s</Y>\n</max>\n</Rect>", name,value.Min.X,value.Min.Y,value.Max.X,value.Max.Y))
-    elseif propType == "Content" then
-        table.insert(buffer, string.format("<Content name=\"%s\"><url>%s</url></Content>", name, value))
-    elseif propType == "BinaryString" then
-        if type(value) == "string" then
-            table.insert(buffer, string.format("<BinaryString name=\"%s\"><![CDATA[%s]]></BinaryString>", name, encodeBase64(value)))
-        else
-            warn("[SaveInstance] Skipped BinaryString: " .. instance:GetFullName() .. " " .. name .. " not a string")
-        end
-    elseif propType == "ProtectedString" then
-        table.insert(buffer, string.format("<ProtectedString name=\"%s\"><![CDATA[%s]]></ProtectedString>", name, SaveInstance._scriptCache[instance] or tostring(value)))
-    else
-        table.insert(buffer, string.format("<%s name=\"%s\">%s</%s>", type(value), name, SaveInstance.EscapeForm(tostring(value)), type(value)))
+    while jobCount > 0 do
+        RunService.Heartbeat:Wait()
     end
 end
 
--- Recursive serialization
-local function Serialize(instance, buffer, instanceIds, instanceCount)
-    if IGNORE_LIST[instance] then return instanceCount end
-    local className = instance.ClassName
-    if className == "PlayerScripts" or className == "PlayerGui" then
-        className = "Folder"
+-- Convert Unions to MeshParts preserving size/CFrame/PhysicsData
+function SaveInstance.ConvertUnion(instance)
+    if not instance:IsA("UnionOperation") then return instance end
+
+    local cf, size = instance:GetBoundingBox()
+    local meshPart = Instance.new("MeshPart")
+    meshPart.Name = instance.Name
+    meshPart.CFrame = cf
+    meshPart.Size = size
+    meshPart.Material = instance.Material
+    meshPart.BrickColor = instance.BrickColor
+    meshPart.MeshType = Enum.MeshType.FileMesh
+    meshPart.TextureID = instance.TextureID or ""
+    meshPart.Parent = instance.Parent
+    instance:Destroy()
+    return meshPart
+end
+
+-- Serialize instances
+function SaveInstance.Serialize(instance, buffer, instanceIds, instanceCount)
+    if IGNORE_LIST[instance] then return end
+    instance = SaveInstance.ConvertUnion(instance) -- Union → MeshPart
+
+    -- Assign ID
+    local id = instanceIds[instance]
+    if not id then
+        instanceCount.value += 1
+        id = "RBX" .. instanceCount.value
+        instanceIds[instance] = id
     end
 
-    local id
-    id, instanceCount = Identify(instance, instanceIds, instanceCount)
+    table.insert(buffer, string.format('<Item class="%s" referent="%s">', instance.ClassName, id))
+    table.insert(buffer, "<Properties>")
 
-    table.insert(buffer, string.format("<Item class=\"%s\" referent=\"%s\">\n<Properties>", className, id))
+    -- Serialize basic properties
+    local function SafeProp(propName)
+        local ok, value = pcall(function() return instance[propName] end)
+        if ok then return value end
+        return nil
+    end
 
-    for _,property in ipairs(Classes[instance.ClassName] and Classes[instance.ClassName].Properties or {}) do
-        SerializeProperty(instance, property, buffer)
+    -- Size, CFrame, Color
+    local props = {
+        {"Size", instance.Size},
+        {"CFrame", instance.CFrame},
+        {"Material", instance.Material.Name},
+        {"BrickColor", instance.BrickColor.Name},
+        {"Transparency", instance.Transparency}
+    }
+
+    for _,p in ipairs(props) do
+        table.insert(buffer, string.format('<%s>%s</%s>', p[1], tostring(p[2]), p[1]))
     end
 
     table.insert(buffer, "</Properties>")
 
+    -- Serialize children
     for _,child in ipairs(instance:GetChildren()) do
-        instanceCount = Serialize(child, buffer, instanceIds, instanceCount)
+        SaveInstance.Serialize(child, buffer, instanceIds, instanceCount)
     end
 
     table.insert(buffer, "</Item>")
-    return instanceCount
 end
 
--- Main Save function
-function SaveInstance.Save(parent)
-    parent = parent or game
-    local file = parent:GetFullName() .. "-Save-" .. game.PlaceId
-    if parent == game or parent.Parent == game then file ..= ".rbxlx" else file ..= ".rbxmx" end
+-- Main Save Function
+function SaveInstance.Save(root)
+    root = root or game
+    SaveInstance.CacheScripts(root)
 
+    local file = root:GetFullName() .. "-Save-" .. game.PlaceId .. ".rbxlx"
     local buffer = {}
     local instanceIds = {}
-    local instanceCount = 0
+    local instanceCount = {value = 0}
 
-    SaveInstance.CacheScripts(parent)
-
-    table.insert(buffer, "<roblox xmlns:xmime=\"http://www.w3.org/2005/05/xmlmime\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:noNamespaceSchemaLocation=\"http://www.roblox.com/roblox.xsd\" version=\"4\">\n<External>null</External>\n<External>nil</External>")
-
-    if parent == game then
+    if root == game then
         for _,service in ipairs(game:GetChildren()) do
-            instanceCount = Serialize(service, buffer, instanceIds, instanceCount)
+            if not IGNORE_LIST[service] then
+                SaveInstance.Serialize(service, buffer, instanceIds, instanceCount)
+            end
         end
     else
-        instanceCount = Serialize(parent, buffer, instanceIds, instanceCount)
+        SaveInstance.Serialize(root, buffer, instanceIds, instanceCount)
     end
 
-    table.insert(buffer, "<SharedStrings>\n</SharedStrings>\n</roblox>")
-
-    writefile(file, table.concat(buffer))
-    print("[SaveInstance] Save complete: " .. file)
+    writefile(file, table.concat(buffer, "\n"))
+    print("[SaveInstance] Save complete:", file)
 end
 
 return SaveInstance
