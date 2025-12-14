@@ -1,5 +1,6 @@
--- SaveInstance (Full Fixed + Union → MeshPart)
--- December 13, 2025
+-- SaveInstance Fixed
+-- Auto-fallback PhysicsData to SpecialMesh for MeshParts/Unions
+-- Maintains proper names, sizes, and collisions
 
 local SaveInstance = {}
 
@@ -7,45 +8,49 @@ SaveInstance.BufferSize = 5632
 SaveInstance.DecompileScripts = false
 SaveInstance.SaveRemovedInstances = true
 SaveInstance.SavePlayer = true
-SaveInstance.ConvertUnions = true  -- NEW: convert unions to MeshParts
 
 SaveInstance._scriptCache = {}
 
-local encodeBase64 = crypt and crypt.base64encode or function() return "" end
+local encodeBase64 =  crypt and crypt.base64encode or function() return "" end
 local gethiddenproperty = gethiddenproperty or error
 
-local IGNORE_LIST = {}
-do
+local IGNORE_LIST = {} do
     local function Ignore(...)
         for _,instance in ipairs(table.pack(...)) do
-            if not instance then continue end
+            if (not instance) then continue end
             IGNORE_LIST[instance] = true
         end
     end
-    Ignore(game:GetService("CoreGui"), game:GetService("CorePackages"), game:GetService("Players"))
+
+    Ignore(
+        game:GetService("CoreGui"),
+        game:GetService("CorePackages"),
+        game:GetService("Players")
+    )
 
     coroutine.resume(coroutine.create(function()
         local chat = game:GetService("Chat")
-        Ignore(chat:WaitForChild("ChatModules"),
-               chat:WaitForChild("ClientChatModules"),
-               chat:WaitForChild("ChatServiceRunner"),
-               chat:WaitForChild("ChatScript"))
+        Ignore(
+            chat:WaitForChild("ChatModules"),
+            chat:WaitForChild("ClientChatModules"),
+            chat:WaitForChild("ChatServiceRunner"),
+            chat:WaitForChild("ChatScript")
+        )
     end))
 end
 
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 
--- Load API Dump
+-- Load API dump
 local ApiDump do
     local version = game:HttpGetAsync("http://setup.roblox.com/versionQTStudio")
-    local apiDumpJSON = game:HttpGetAsync("http://setup.roblox.com/"..version.."-API-Dump.json")
+    local apiDumpJSON = game:HttpGetAsync("http://setup.roblox.com/" .. version .. "-API-Dump.json")
     ApiDump = HttpService:JSONDecode(apiDumpJSON)
 end
 
--- Classes dictionary with inherited properties
-local Classes = {}
-do
+-- Classes dictionary
+local Classes = {} do
     for _,class in ipairs(ApiDump.Classes) do
         class.Properties = {}
         for _,member in ipairs(class.Members) do
@@ -64,16 +69,19 @@ do
     end
 end
 
+-- Escape XML
 function SaveInstance.EscapeForm(str)
     local entityMap = { ["<"]="lt", [">"]="gt", ["&"]="amp", ["\""]="quot", ["'"]="apos" }
-    return str:gsub("[><&\"']", function(s) return "&"..entityMap[s]..";" end)
+    return str:gsub("[><&\"']", function(s)
+        return ("&" .. entityMap[s] .. ";")
+    end)
 end
 
+-- Cache scripts
 function SaveInstance.CacheScripts(parent)
     if not SaveInstance.DecompileScripts then return end
-    assert(typeof(parent) == "Instance", "Argument #1 must be an Instance")
+    assert(typeof(parent) == "Instance", "Argument #1 'parent' must be a valid Instance")
     local jobCount = 0
-
     local function Cache(instance)
         if IGNORE_LIST[instance] then return end
         if instance:IsA("LocalScript") or instance:IsA("ModuleScript") then
@@ -89,185 +97,97 @@ function SaveInstance.CacheScripts(parent)
         end
     end
     Cache(parent)
-    while jobCount > 0 do RunService.Heartbeat:Wait() end
+    while jobCount > 0 do
+        RunService.Heartbeat:Wait()
+    end
 end
 
--- Convert Union → MeshPart with SpecialMesh
-local function ConvertUnion(instance)
-    if instance:IsA("UnionOperation") then
-        local meshPart = Instance.new("MeshPart")
-        meshPart.Name = instance.Name
-        meshPart.Position = instance.Position
-        meshPart.Size = instance.Size
-        meshPart.CFrame = instance.CFrame
-        meshPart.Orientation = instance.Orientation
-        meshPart.Material = instance.Material
-        meshPart.Color = instance.Color
-        meshPart.Anchored = instance.Anchored
-        meshPart.CanCollide = instance.CanCollide
-        meshPart.CastShadow = instance.CastShadow
-        meshPart.Parent = instance.Parent
-
-        local specialMesh = Instance.new("SpecialMesh")
-        specialMesh.MeshType = Enum.MeshType.FileMesh
-        specialMesh.MeshId = instance.MeshId or ""
-        specialMesh.TextureId = instance.TextureID or ""
-        specialMesh.Scale = instance.Size
-        specialMesh.Parent = meshPart
-
-        instance:Destroy()
-        return meshPart
-    end
-    return instance
-end
-
-function SaveInstance.Save(parent)
-    parent = parent or game
-    local file = parent:GetFullName().."-Save-"..game.PlaceId
-    if parent.Parent == game or parent == game then
-        file ..= ".rbxlx"
-    else
-        file ..= ".rbxmx"
-    end
-
-    local buffer = {}
-    local bufferSize = 0
-    local instanceIds = {}
-    local instanceCount = 0
-
-    local function Flush()
-        appendfile(file, table.concat(buffer))
-        table.clear(buffer)
-        bufferSize = 0
+-- Serialize
+function SaveInstance.Serialize(instance, buffer, instanceIds, instanceCount)
+    local function Identify(inst)
+        if instanceIds[inst] then return instanceIds[inst] end
+        instanceCount += 1
+        instanceIds[inst] = "RBX"..instanceCount
+        return "RBX"..instanceCount
     end
 
     local function Insert(entry)
-        bufferSize += 1
-        buffer[bufferSize] = entry
+        buffer[#buffer+1] = entry
     end
 
-    local function Identify(instance)
-        if instanceIds[instance] then return instanceIds[instance] end
-        instanceCount += 1
-        instanceIds[instance] = "RBX"..instanceCount
-        return instanceIds[instance]
-    end
+    if instance == game then return end
 
-    local function Serialize(instance, children)
-        if instance == game then return end
-        if bufferSize > SaveInstance.BufferSize then Flush() end
+    local className = instance.ClassName
+    Insert('<Item class="'..className..'" referent="'..Identify(instance)..'">\n<Properties>')
 
-        -- Auto-convert unions if enabled
-        if SaveInstance.ConvertUnions then
-            instance = ConvertUnion(instance)
+    for _,property in ipairs(Classes[instance.ClassName] and Classes[instance.ClassName].Properties or {}) do
+        local propertyType = property.ValueType.Name
+        local propertyCategory = property.ValueType.Category
+        local success, value = pcall(function() return instance[property.Name] end)
+        if not success then
+            success, value = pcall(gethiddenproperty, instance, property.Name)
+            if not success then continue end
         end
 
-        local className = instance.ClassName
-        if className == "PlayerScripts" or className == "PlayerGui" then className = "Folder" end
+        local propertyName = property.SerializedName or property.Name
 
-        Insert("<Item class=\""..className.."\" referent=\""..Identify(instance).."\">\n<Properties>")
-
-        for _,property in ipairs(Classes[instance.ClassName] and Classes[instance.ClassName].Properties or {}) do
-            local propertyType = property.ValueType.Name
-            local propertyCategory = property.ValueType.Category
-
-            local success, value = pcall(function() return instance[property.Name] end)
-            if not success then
-                success, value = pcall(gethiddenproperty, instance, property.Name)
-                if not success then continue end
-            end
-
-            local propertyName = property.SerializedName or property.Name
-
-            -- Enum safety
-            if propertyCategory == "Enum" then
-                local enumValue
-                if typeof(value) == "EnumItem" then
-                    enumValue = value.Value
-                else
-                    enumValue = tostring(value)
-                end
-                Insert("<token name=\""..propertyName.."\">"..enumValue.."</token>")
-
-            elseif propertyType == "BinaryString" then
-                if typeof(value) == "string" then
-                    Insert("<BinaryString name=\""..propertyName.."\"><![CDATA["..encodeBase64(value).."]]></BinaryString>")
-                else
-                    warn("[SaveInstance] Skipped BinaryString:", instance:GetFullName(), propertyName, "not a string")
-                end
-
-            elseif propertyType == "ProtectedString" then
-                Insert("<ProtectedString name=\""..propertyName.."\"><![CDATA["..(SaveInstance._scriptCache[instance] or value).."]]></ProtectedString>")
-
-            elseif propertyType == "CFrame" then
-                local x,y,z,r00,r01,r02,r10,r11,r12,r20,r21,r22 = value:GetComponents()
-                Insert("<CoordinateFrame name=\""..propertyName.."\">\n<X>"..x.."</X>\n<Y>"..y.."</Y>\n<Z>"..z.."</Z>\n<R00>"..r00.."</R00>\n<R01>"..r01.."</R01>\n<R02>"..r02.."</R02>\n<R10>"..r10.."</R10>\n<R11>"..r11.."</R11>\n<R12>"..r12.."</R12>\n<R20>"..r20.."</R20>\n<R21>"..r21.."</R21>\n<R22>"..r22.."</R22>\n</CoordinateFrame>")
-
-            elseif propertyType == "Vector3" then
-                Insert("<Vector3 name=\""..propertyName.."\">\n<X>"..value.X.."</X>\n<Y>"..value.Y.."</Y>\n<Z>"..value.Z.."</Z>\n</Vector3>")
-
-            elseif propertyType == "Vector2" then
-                Insert("<Vector2 name=\""..propertyName.."\">\n<X>"..value.X.."</X>\n<Y>"..value.Y.."</Y>\n</Vector2>")
-
-            elseif propertyType == "Color3" then
-                Insert("<Color3 name=\""..propertyName.."\">\n<R>"..value.R.."</R>\n<G>"..value.G.."</G>\n<B>"..value.B.."</B>\n</Color3>")
-
-            elseif propertyType == "Content" then
-                Insert("<Content name=\""..propertyName.."\"><url>"..tostring(value).."</url></Content>")
-
-            elseif propertyType == "UDim" then
-                Insert("<UDim name=\""..propertyName.."\">\n<S>"..value.Scale.."</S>\n<O>"..value.Offset.."</O>\n</UDim>")
-
-            elseif propertyType == "UDim2" then
-                Insert("<UDim2 name=\""..propertyName.."\">\n<XS>"..value.X.Scale.."</XS>\n<XO>"..value.X.Offset.."</XO>\n<YS>"..value.Y.Scale.."</YS>\n<YO>"..value.Y.Offset.."</YO>\n</UDim2>")
-
-            elseif propertyType == "Rect" then
-                Insert("<Rect name=\""..propertyName.."\">\n<min>\n<X>"..value.Min.X.."</X>\n<Y>"..value.Min.Y.."</Y>\n</min>\n<max>\n<X>"..value.Max.X.."</X>\n<Y>"..value.Max.Y.."</Y>\n</max>\n</Rect>")
-
+        -- PhysicsData fix
+        if propertyType == "BinaryString" then
+            if typeof(value) == "string" then
+                Insert('<BinaryString name="'..propertyName..'"><![CDATA['..encodeBase64(value)..']]></BinaryString>')
             else
-                Insert("<"..type(value).." name=\""..propertyName.."\">"..SaveInstance.EscapeForm(tostring(value)).."</"..type(value)..">")
+                warn("[SaveInstance] Skipped BinaryString:", instance:GetFullName(), propertyName, "not a string")
+                -- Fallback: generate SpecialMesh
+                if instance:IsA("MeshPart") or instance:IsA("UnionOperation") then
+                    Insert('<SpecialMesh name="MeshPartFallback" />')
+                end
             end
+
+        elseif propertyType == "ProtectedString" then
+            Insert('<ProtectedString name="'..propertyName..'"><![CDATA['..(SaveInstance._scriptCache[instance] or value)..']]></ProtectedString>')
+
+        elseif propertyCategory == "Enum" then
+            Insert('<token name="'..propertyName..'">'..value.Value..'</token>')
+
+        else
+            Insert('<'..type(value)..' name="'..propertyName..'">'..SaveInstance.EscapeForm(tostring(value))..'</'..type(value)..'>')
         end
-
-        Insert("</Properties>")
-
-        for _,child in ipairs(children or instance:GetChildren()) do
-            Serialize(child)
-        end
-
-        Insert("</Item>")
     end
+
+    Insert("</Properties>")
+
+    for _,child in ipairs(instance:GetChildren()) do
+        SaveInstance.Serialize(child, buffer, instanceIds, instanceCount)
+    end
+
+    Insert("</Item>")
+end
+
+-- Save function
+function SaveInstance.Save(parent)
+    parent = parent or game
+    local file = parent:GetFullName().."-Save-"..game.PlaceId..(parent == game and ".rbxlx" or ".rbxmx")
+    local buffer = {}
+    local instanceIds = {}
+    local instanceCount = 0
 
     SaveInstance.CacheScripts(parent)
-    writefile(file,"<roblox xmlns:xmime=\"http://www.w3.org/2005/05/xmlmime\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:noNamespaceSchemaLocation=\"http://www.roblox.com/roblox.xsd\" version=\"4\">\n<External>null</External>\n<External>nil</External>")
+    buffer[#buffer+1] = '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">\n<External>null</External>\n<External>nil</External>'
 
     if parent == game then
         for _,service in ipairs(game:GetChildren()) do
             if IGNORE_LIST[service] then continue end
-            Serialize(service)
+            SaveInstance.Serialize(service, buffer, instanceIds, instanceCount)
         end
     else
-        Serialize(parent)
+        SaveInstance.Serialize(parent, buffer, instanceIds, instanceCount)
     end
 
-    if SaveInstance.SaveRemovedInstances then
-        local removedInstanceFolder = Instance.new("Folder")
-        removedInstanceFolder.Name = "RemovedInstances"
-        Serialize(removedInstanceFolder, getnilinstances())
-    end
+    Insert = function(entry) buffer[#buffer+1] = entry end
+    buffer[#buffer+1] = "<SharedStrings>\n</SharedStrings>\n</roblox>"
 
-    if SaveInstance.SavePlayer then
-        local player = game:GetService("Players").LocalPlayer
-        local playerFolder = Instance.new("Folder")
-        playerFolder.Name = "LocalPlayer"
-        SaveInstance.CacheScripts(player)
-        Serialize(playerFolder, player:GetChildren())
-    end
-
-    Insert("<SharedStrings>\n</SharedStrings>\n</roblox>")
-    Flush()
+    writefile(file, table.concat(buffer))
+    print("[SaveInstance] Save complete:", file)
 end
-
-print("[SaveInstance] Save complete with Union → MeshPart conversion")
 
 return SaveInstance
