@@ -153,6 +153,44 @@ function SaveInstance.CacheScripts(parent)
 end
 
 -- =========================
+-- UNION → MESHPART CONVERSION + SIZE FIXES
+-- =========================
+
+-- Converts UnionOperation into MeshPart placeholders with correct size/CFrame
+local function ConvertUnion(union)
+    local mesh = Instance.new("MeshPart")
+    mesh.Name = union.Name
+
+    -- Preserve transform
+    mesh.CFrame = union.CFrame
+    mesh.Size = union.Size
+    mesh.Anchored = union.Anchored
+    mesh.CanCollide = union.CanCollide
+    mesh.CanQuery = union.CanQuery
+    mesh.CanTouch = union.CanTouch
+    mesh.Transparency = union.Transparency
+    mesh.Material = union.Material
+    mesh.Color = union.Color
+    mesh.Reflectance = union.Reflectance
+    mesh.CastShadow = union.CastShadow
+
+    -- Union asset fallback
+    local ok, assetId = pcall(function()
+        return union.AssetId
+    end)
+    if ok and assetId and assetId ~= "" then
+        mesh.MeshId = assetId
+    end
+
+    -- Copy surface properties
+    for _, face in ipairs(Enum.NormalId:GetEnumItems()) do
+        mesh[face.Name .. "Surface"] = union[face.Name .. "Surface"]
+    end
+
+    return mesh
+end
+
+-- =========================
 -- SAVE CORE
 -- =========================
 function SaveInstance.Save(parent)
